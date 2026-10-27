@@ -6,7 +6,7 @@
 
 - Mac ชิป Apple (M1 ขึ้นไป) ตัวที่ใช้ชิป Intel ยังไม่รองรับ
 - macOS เวอร์ชันใหม่ (ทดสอบแล้วบน macOS 26)
-- ไฟล์ `RightType-mac-<เวอร์ชัน>-arm64.zip` โหลดได้จากหน้า
+- ไฟล์ `RightType-mac-<เวอร์ชัน>-arm64.dmg` โหลดได้จากหน้า
   [Releases](https://github.com/soraxtend/righttype-mac/releases/latest) เลือกตัวล่าสุด
 
 ไม่แน่ใจว่าเครื่องใช้ชิปอะไร? กดเมนู  มุมซ้ายบน → **About This Mac** ดูที่บรรทัด Chip
@@ -16,10 +16,11 @@
 
 ## 1. วางแอปไว้ใน Applications
 
-1. ดับเบิลคลิกไฟล์ zip จะได้ **RightType** ออกมาข้างกัน
-2. ลาก **RightType** ไปวางในโฟลเดอร์ **Applications** (ใน Finder อยู่แถบซ้าย)
+1. ดับเบิลคลิกไฟล์ `.dmg` จะมีหน้าต่างเปิดขึ้นมา ข้างในมี **RightType** กับโฟลเดอร์ **Applications**
+2. ลาก **RightType** ไปวางบน **Applications**
+3. ปิดหน้าต่างนั้น แล้วกด eject **RightType** ที่แถบซ้ายของ Finder (ไฟล์ `.dmg` ลบทิ้งได้เลย)
 
-ควรวางไว้ใน Applications จริงๆ ไม่ใช่เปิดจาก Downloads
+อย่าเปิดแอปจากในหน้าต่าง `.dmg` โดยตรง ต้องเปิดจาก Applications
 เพราะสิทธิ์ในขั้นที่ 3 กับการเปิดเองตอนเข้าเครื่องผูกกับตำแหน่งของแอป
 
 ## 2. เปิดครั้งแรก
@@ -125,12 +126,13 @@ Terminal, 1Password, Bitwarden, Keychain และ Remote Desktop ก็ปิ�
 ```
 
 คำสั่งนี้ build แล้ววางลง `/Applications` ให้เลย จากนั้นทำต่อจากขั้นที่ 3
-ถ้าจะแพ็กเป็นไฟล์ zip ไว้ส่งต่อ ใช้ `./build.sh dist` จะได้ไฟล์ใน `build/` พร้อมไฟล์ `.sha256` ไว้ตรวจว่าไฟล์ไม่เสีย
+ถ้าจะแพ็กเป็นไฟล์ `.dmg` ไว้ส่งต่อ ใช้ `./build.sh dist` จะได้ไฟล์ใน `build/` พร้อมไฟล์ `.sha256` ไว้ตรวจว่าไฟล์ไม่เสีย
+มี Apple Developer ID แล้ว ดูวิธีเซ็นและ notarize ที่หัวไฟล์ `build.sh` ทำแล้วขั้นที่ 2 จะหายไปทั้งขั้น
 
 ตรวจไฟล์ที่ได้รับมาด้วย
 
 ```bash
-shasum -a 256 RightType-mac-0.1.0-arm64.zip
+shasum -a 256 RightType-mac-0.1.0-arm64.dmg
 ```
 
 ตัวเลขต้องตรงกับในไฟล์ `.sha256` ที่อยู่หน้า Releases เดียวกัน
