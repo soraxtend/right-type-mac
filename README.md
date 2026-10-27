@@ -75,4 +75,4 @@ tools/     make_icon.swift วาดไอคอนแอป (app/AppIcon.icns)
 build.sh   build ทั้งสองส่วนเป็น build/RightType.app
 ```
 
-License: MIT OR Apache-2.0 ตาม RightType ต้นฉบับ
+License: เลือกใช้ได้ระหว่าง [MIT](LICENSE-MIT) หรือ [Apache-2.0](LICENSE-APACHE) ตาม RightType ต้นฉบับ

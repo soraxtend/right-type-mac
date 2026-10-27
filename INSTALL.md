@@ -6,7 +6,8 @@
 
 - Mac ชิป Apple (M1 ขึ้นไป) ตัวที่ใช้ชิป Intel ยังไม่รองรับ
 - macOS เวอร์ชันใหม่ (ทดสอบแล้วบน macOS 26)
-- ไฟล์ `RightType-mac-<เวอร์ชัน>-arm64.zip`
+- ไฟล์ `RightType-mac-<เวอร์ชัน>-arm64.zip` โหลดได้จากหน้า
+  [Releases](https://github.com/soraxtend/righttype-mac/releases/latest) เลือกตัวล่าสุด
 
 ไม่แน่ใจว่าเครื่องใช้ชิปอะไร? กดเมนู  มุมซ้ายบน → **About This Mac** ดูที่บรรทัด Chip
 ถ้าขึ้นว่า Apple M1, M2, M3 หรือ M4 ก็ใช้ได้
@@ -132,4 +133,4 @@ Terminal, 1Password, Bitwarden, Keychain และ Remote Desktop ก็ปิ�
 shasum -a 256 RightType-mac-0.1.0-arm64.zip
 ```
 
-ตัวเลขต้องตรงกับในไฟล์ `.sha256` ที่มากับ zip
+ตัวเลขต้องตรงกับในไฟล์ `.sha256` ที่อยู่หน้า Releases เดียวกัน
