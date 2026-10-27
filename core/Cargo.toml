@@ -1,0 +1,21 @@
+[package]
+name = "righttype_mac_core"
+version = "0.1.0"
+edition = "2021"
+description = "C bridge from the RightType pure-logic core to the macOS app"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# The OS-free core of RightType (Windows), pinned to the commit this port was built against.
+righttype = { git = "https://github.com/k-affan-th/RightType", rev = "ea4bce495e60a12a95d014f55b3e542890261e49" }
+zeroize = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
