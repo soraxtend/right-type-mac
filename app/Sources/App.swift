@@ -20,9 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let defaults = UserDefaults.standard
 
     func applicationDidFinishLaunching(_ note: Notification) {
-        defaults.register(defaults: ["mode": Mode.manual.rawValue, "excluded": Array(defaultExcluded)])
+        defaults.register(defaults: ["mode": Mode.auto.rawValue, "excluded": Array(defaultExcluded)])
         let tap = Tap.shared
-        tap.mode = Mode(rawValue: defaults.integer(forKey: "mode")) ?? .manual
+        tap.mode = Mode(rawValue: defaults.integer(forKey: "mode")) ?? .auto
         tap.excluded = Set(defaults.stringArray(forKey: "excluded") ?? [])
         tap.onNote = { [weak self] in self?.toast.show($0) }
         InputSources.start()

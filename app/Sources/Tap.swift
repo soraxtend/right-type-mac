@@ -24,7 +24,7 @@ enum Mode: Int {
 final class Tap {
     static let shared = Tap()
 
-    var mode: Mode = .manual
+    var mode: Mode = .auto
     /// Called with a short message to show after a fix.
     var onNote: ((String) -> Void)?
     /// Bundle IDs of apps RightType stays out of.
