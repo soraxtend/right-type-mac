@@ -157,124 +157,128 @@ final class PaletteModel: ObservableObject {
         // Words flipped back lately, while learning them is off.
         let reversed = takeString(rt_learn_reversed())?.split(separator: "\n").map(String.init) ?? []
         for word in reversed {
-            list.append(PaletteItem(section: "คำที่เพิ่งพิมพ์", sectionIcon: "clock.arrow.circlepath",
-                                    title: "ไม่ต้องแปลง “\(word)” อีก", icon: "arrow.uturn.backward") {
+            list.append(PaletteItem(section: tr("คำที่เพิ่งพิมพ์", "Words just typed"), sectionIcon: "clock.arrow.circlepath",
+                                    title: tr("ไม่ต้องแปลง “\(word)” อีก", "Leave “\(word)” as typed from now on"), icon: "arrow.uturn.backward") {
                 rt_learn_keep(word)
                 prefs.learnedVersion += 1
-                tap.onNote?("เพิ่ม “\(word)” แล้ว")
+                tap.onNote?(tr("เพิ่ม “\(word)” แล้ว", "Added “\(word)”"))
             })
         }
 
-        let fix = ("แก้ข้อความ", "wrench.and.screwdriver")
-        list.append(PaletteItem(section: fix.0, sectionIcon: fix.1, title: "แก้ข้อความที่เลือก",
+        let fix = (tr("แก้ข้อความ", "Fix text"), "wrench.and.screwdriver")
+        list.append(PaletteItem(section: fix.0, sectionIcon: fix.1, title: tr("แก้ข้อความที่เลือก", "Fix the selected text"),
                                 icon: "character.textbox", detail: "⌃⇧⌫") { Selection.fix() })
-        list.append(PaletteItem(section: fix.0, sectionIcon: fix.1, title: "พิมพ์ข้อความที่คัดลอกทีละปุ่ม",
+        list.append(PaletteItem(section: fix.0, sectionIcon: fix.1, title: tr("พิมพ์ข้อความที่คัดลอกทีละปุ่ม", "Type the copied text key by key"),
                                 icon: "keyboard") {
             if let text = NSPasteboard.general.string(forType: .string) { Macro.run("T" + text.replacingOccurrences(of: "\n", with: "\nK13\nT")) }
         })
-        list.append(PaletteItem(section: fix.0, sectionIcon: fix.1, title: "หน้าต่างซ่อมข้อความ…",
+        list.append(PaletteItem(section: fix.0, sectionIcon: fix.1, title: tr("หน้าต่างซ่อมข้อความ…", "Fix text window…"),
                                 icon: "doc.text") { SettingsWindow.shared.show(page: .tools) })
 
-        let sel = ("ข้อความที่เลือก", "selection.pin.in.out")
-        let transforms: [(String, String, Int32)] = [
-            ("แก้เฉพาะคำที่พิมพ์ผิดแป้น", "arrow.left.arrow.right", RT_TRANSFORM_REPAIR),
-            ("สลับภาษาทั้งหมด", "globe", RT_TRANSFORM_FLIP),
-            ("จัดอักษรไทยเป็นมาตรฐาน", "textformat", RT_TRANSFORM_NORMALIZE),
-            ("จัดเว้นวรรคแบบไทย (ๆ ฯลฯ วงเล็บ)", "text.alignleft", RT_TRANSFORM_SPACING),
-            ("ปี พ.ศ. ↔ ค.ศ.", "calendar", RT_TRANSFORM_ERA),
-            ("ตัวเลขเป็นคำอ่าน", "number", RT_TRANSFORM_NUMBER_WORDS),
-            ("จำนวนเงินเป็นตัวอักษร (บาท)", "bahtsign", RT_TRANSFORM_BAHT_WORDS),
-            ("เลขไทย ↔ เลขอารบิก", "number.square", RT_TRANSFORM_DIGITS),
-            ("ตัวพิมพ์ใหญ่ทั้งหมด", "textformat.size.larger", RT_TRANSFORM_UPPER),
-            ("ตัวพิมพ์เล็กทั้งหมด", "textformat.size.smaller", RT_TRANSFORM_LOWER),
-            ("ขึ้นต้นคำด้วยตัวใหญ่", "textformat.size", RT_TRANSFORM_TITLE),
-            ("สลับตัวเล็ก/ใหญ่", "arrow.up.arrow.down", RT_TRANSFORM_SWAP_CASE),
-        ]
-        for (title, icon, kind) in transforms {
+        let sel = (tr("ข้อความที่เลือก", "Selected text"), "selection.pin.in.out")
+        for (title, icon, kind) in transformList {
             list.append(PaletteItem(section: sel.0, sectionIcon: sel.1, title: title, icon: icon) {
                 Selection.transform(kind, note: title)
             })
         }
-        list.append(PaletteItem(section: sel.0, sectionIcon: sel.1, title: "เพิ่มคำที่เลือก",
+        list.append(PaletteItem(section: sel.0, sectionIcon: sel.1, title: tr("เพิ่มคำที่เลือก", "Add the selected word"),
                                 icon: "book.closed") {
             Selection.read { text in
                 guard let text, let word = takeString(rt_learn_candidate(text)), prefs.learn(word) != nil else {
-                    tap.onNote?("เพิ่มคำนี้ไม่ได้")
+                    tap.onNote?(tr("เพิ่มคำนี้ไม่ได้", "Can't add this word"))
                     return
                 }
-                tap.onNote?("เพิ่ม “\(word)” แล้ว")
+                tap.onNote?(tr("เพิ่ม “\(word)” แล้ว", "Added “\(word)”"))
             }
         })
 
         let app = tap.frontmostApp
         let appName = NSRunningApplication.runningApplications(withBundleIdentifier: app).first?.localizedName ?? app
-        let here = (app.isEmpty ? "ที่นี่" : "ที่นี่ · \(appName)", "macwindow")
+        let here = (app.isEmpty ? tr("ที่นี่", "Here") : tr("ที่นี่ · \(appName)", "Here · \(appName)"), "macwindow")
         if prefs.paused {
-            list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: "กลับมาทำงานเดี๋ยวนี้",
-                                    icon: "play") { prefs.resume(); tap.onNote?("RightType กลับมาทำงานแล้ว") })
+            list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: tr("กลับมาทำงานเดี๋ยวนี้", "Resume now"),
+                                    icon: "play") { prefs.resume(); tap.onNote?(tr("RightType กลับมาทำงานแล้ว", "RightType is working again")) })
         } else {
-            list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: "หยุดชั่วคราว 30 นาที",
-                                    icon: "pause") { prefs.pause(minutes: 30); tap.onNote?("หยุดชั่วคราว 30 นาที") })
+            list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: tr("หยุดชั่วคราว 30 นาที", "Pause for 30 minutes"),
+                                    icon: "pause") { prefs.pause(minutes: 30); tap.onNote?(tr("หยุดชั่วคราว 30 นาที", "Paused for 30 minutes")) })
         }
         if !app.isEmpty {
             // This app's own mode (`PaletteOfferKeep`), or back to the global one.
             let own = prefs.appMode(app)
             if let own, own != .off {
-                list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: "โหมดในแอปนี้: \(own.name)",
-                                        icon: "checkmark.circle", detail: "ตั้งค่า…") {
+                list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: tr("โหมดในแอปนี้: \(own.name)", "Mode in this app: \(own.name)"),
+                                        icon: "checkmark.circle", detail: tr("ตั้งค่า…", "Settings…")) {
                     SettingsWindow.shared.show(page: .apps)
                 })
             }
             var choices: [(String, String, Mode?)] = [
-                ("ใช้โหมดกดแก้เองใน \(appName) ตลอด", "keyboard", .manual),
-                ("ใช้โหมดแนะนำใน \(appName) ตลอด", "lightbulb", .suggest),
-                ("ใช้โหมดอัตโนมัติใน \(appName) ตลอด", "bolt", .auto),
-            ].filter { $0.2 != own }
+                (Mode.manual, "keyboard"), (.suggest, "lightbulb"), (.auto, "bolt"),
+            ].filter { $0.0 != own }.map { m, icon in
+                (tr("ใช้\(m.title)ใน \(appName) ตลอด", "Always use \(m.title) in \(appName)"), icon, m as Mode?)
+            }
             if own == .off {
-                choices.append(("เปิดในแอปนี้อีกครั้ง", "power", nil))
+                choices.append((tr("เปิดในแอปนี้อีกครั้ง", "On again in this app"), "power", nil))
             } else {
-                if own != nil { choices.append(("ใช้โหมดปกติ", "arrow.uturn.backward", nil)) }
-                choices.append(("ปิดในแอปนี้", "power", .off))
+                if own != nil { choices.append((AppDelegate.appModeLabel(nil), "arrow.uturn.backward", nil)) }
+                choices.append((AppDelegate.appModeLabel(.off), "power", .off))
             }
             for (title, icon, mode) in choices {
                 list.append(PaletteItem(section: here.0, sectionIcon: here.1, title: title, icon: icon) {
                     prefs.setAppMode(app, mode)
-                    tap.onNote?("\(mode.map { $0 == .off ? "ปิด" : "โหมด" + $0.name } ?? "ใช้โหมดปกติ") ใน \(appName)")
+                    tap.onNote?(appModeNote(mode, appName))
                 })
             }
         }
 
-        let modes = ("โหมด", "slider.horizontal.3")
+        let modes = (tr("โหมด", "Mode"), "slider.horizontal.3")
         for (mode, icon) in [(Mode.auto, "bolt"), (.suggest, "lightbulb"), (.semiAuto, "space"), (.manual, "keyboard")] {
             let inUse = prefs.enabled && prefs.mode == mode
-            list.append(PaletteItem(section: modes.0, sectionIcon: modes.1, title: "โหมด\(mode.name)", icon: icon,
-                                    detail: inUse ? "ใช้อยู่" : nil) {
+            list.append(PaletteItem(section: modes.0, sectionIcon: modes.1, title: mode.title, icon: icon,
+                                    detail: inUse ? tr("ใช้อยู่", "in use") : nil) {
                 prefs.mode = mode
                 prefs.enabled = true
-                tap.onNote?("โหมด\(mode.name)")
+                tap.onNote?(mode.title)
             })
         }
 
-        let opts = ("ตัวเลือก", "gearshape")
+        let opts = (tr("ตัวเลือก", "Options"), "gearshape")
         let toggles: [(String, String, ReferenceWritableKeyPath<Prefs, Bool>)] = [
-            ("เปิดใช้งาน RightType", "power.circle", \.enabled),
-            ("เรียนรู้คำใหม่", "book", \.learnTyped),
-            ("แก้คำไทยที่สะกดผิดบ่อย", "character.book.closed", \.spelling),
-            ("แก้เว็บ อีเมล ตัวเลขที่พิมพ์บนแป้นไทย", "at", \.addresses),
+            (tr("เปิดใช้งาน RightType", "RightType on"), "power.circle", \.enabled),
+            (tr("เรียนรู้คำใหม่", "Learn new words"), "book", \.learnTyped),
+            (tr("แก้คำไทยที่สะกดผิดบ่อย", "Fix common Thai misspellings"), "character.book.closed", \.spelling),
+            (tr("แก้เว็บ อีเมล ตัวเลขที่พิมพ์บนแป้นไทย", "Fix web addresses, email and numbers on the Thai keyboard"), "at", \.addresses),
         ]
         for (title, icon, path) in toggles {
             let on = prefs[keyPath: path]
             list.append(PaletteItem(section: opts.0, sectionIcon: opts.1, title: title, icon: icon,
-                                    detail: on ? "เปิด" : "ปิด") {
+                                    detail: on ? tr("เปิด", "On") : tr("ปิด", "Off")) {
                 prefs[keyPath: path].toggle()
-                tap.onNote?("\(title): \(prefs[keyPath: path] ? "เปิด" : "ปิด")")
+                tap.onNote?("\(title): \(prefs[keyPath: path] ? tr("เปิด", "on") : tr("ปิด", "off"))")
             })
         }
-        list.append(PaletteItem(section: opts.0, sectionIcon: opts.1, title: "ตัวเลือกและการตั้งค่า", icon: "gearshape") {
+        list.append(PaletteItem(section: opts.0, sectionIcon: opts.1, title: tr("ตัวเลือกและการตั้งค่า", "Options and settings"), icon: "gearshape") {
             SettingsWindow.shared.show()
         })
         items = list
     }
+}
+
+/// The changes made to selected text (the palette and the Tools page).
+var transformList: [(String, String, Int32)] {
+    [
+        (tr("แก้เฉพาะคำที่พิมพ์ผิดแป้น", "Fix only the wrong-keyboard words"), "arrow.left.arrow.right", RT_TRANSFORM_REPAIR),
+        (tr("สลับภาษาทั้งหมด", "Flip all of it to the other keyboard"), "globe", RT_TRANSFORM_FLIP),
+        (tr("จัดอักษรไทยเป็นมาตรฐาน", "Thai in standard form"), "textformat", RT_TRANSFORM_NORMALIZE),
+        (tr("จัดเว้นวรรคแบบไทย (ๆ ฯลฯ วงเล็บ)", "Thai spacing (ๆ ฯลฯ brackets)"), "text.alignleft", RT_TRANSFORM_SPACING),
+        (tr("ปี พ.ศ. ↔ ค.ศ.", "Year พ.ศ. ↔ ค.ศ."), "calendar", RT_TRANSFORM_ERA),
+        (tr("ตัวเลขเป็นคำอ่าน", "Number in Thai words"), "number", RT_TRANSFORM_NUMBER_WORDS),
+        (tr("จำนวนเงินเป็นตัวอักษร (บาท)", "Amount in words (baht)"), "bahtsign", RT_TRANSFORM_BAHT_WORDS),
+        (tr("เลขไทย ↔ เลขอารบิก", "Thai digits ↔ 0–9"), "number.square", RT_TRANSFORM_DIGITS),
+        (tr("ตัวพิมพ์ใหญ่ทั้งหมด", "UPPER CASE"), "textformat.size.larger", RT_TRANSFORM_UPPER),
+        (tr("ตัวพิมพ์เล็กทั้งหมด", "lower case"), "textformat.size.smaller", RT_TRANSFORM_LOWER),
+        (tr("ขึ้นต้นคำด้วยตัวใหญ่", "Title Case"), "textformat.size", RT_TRANSFORM_TITLE),
+        (tr("สลับตัวเล็ก/ใหญ่", "sWAP cASE"), "arrow.up.arrow.down", RT_TRANSFORM_SWAP_CASE),
+    ]
 }
 
 struct PaletteView: View {
@@ -284,10 +288,10 @@ struct PaletteView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("↑↓ Enter · 1–9 · พิมพ์เพื่อค้นหา · Esc")
+            Text(tr("↑↓ Enter · 1–9 · พิมพ์เพื่อค้นหา · Esc", "↑↓ Enter · 1–9 · type to search · Esc"))
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.horizontal, 14).padding(.top, 10)
-            TextField("ค้นหา", text: $model.query)
+            TextField(tr("ค้นหา", "Search"), text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($searching)

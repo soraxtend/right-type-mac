@@ -10,18 +10,24 @@ final class SettingsWindow {
     private var window: NSWindow?
     private let nav = SettingsNav()
 
+    private static var title: String { tr("RightType — ตั้งค่า", "RightType — Settings") }
+
     func show(page: SettingsPage? = nil) {
         if let page { nav.page = page }
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 640),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            w.title = "RightType — ตั้งค่า"
+            NotificationCenter.default.addObserver(forName: .rightTypeStateChanged, object: nil, queue: .main) { [weak w] _ in
+                // The language may have changed.
+                w?.title = Self.title
+            }
             w.contentView = NSHostingView(rootView: SettingsView(nav: nav, prefs: Prefs.shared))
             w.contentMinSize = NSSize(width: 700, height: 520)
             w.isReleasedWhenClosed = false
             w.center()
             window = w
         }
+        window?.title = Self.title
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -63,14 +69,14 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .general: return "ทั่วไป"
-        case .keyboard: return "แป้นพิมพ์"
-        case .tools: return "เครื่องมือ"
-        case .hotkeys: return "ปุ่มลัด"
-        case .learned: return "คำที่จำไว้"
-        case .snippets: return "คำย่อ"
-        case .apps: return "แอปที่ไม่ใช้"
-        case .privacy: return "ความเป็นส่วนตัว"
+        case .general: return tr("ทั่วไป", "General")
+        case .keyboard: return tr("แป้นพิมพ์", "Keyboard")
+        case .tools: return tr("เครื่องมือ", "Tools")
+        case .hotkeys: return tr("ปุ่มลัด", "Hotkeys")
+        case .learned: return tr("คำที่จำไว้", "Learned words")
+        case .snippets: return tr("คำย่อ", "Snippets")
+        case .apps: return tr("แอปที่ไม่ใช้", "Ignored apps")
+        case .privacy: return tr("ความเป็นส่วนตัว", "Privacy")
         }
     }
 
@@ -115,7 +121,7 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("RightType").font(.system(size: 17, weight: .semibold))
-            Text("พิมพ์ผิดภาษา แก้ให้เอง").font(.caption).foregroundStyle(.secondary).padding(.bottom, 14)
+            Text(tr("พิมพ์ผิดภาษา แก้ให้เอง", "Wrong keyboard, fixed")).font(.caption).foregroundStyle(.secondary).padding(.bottom, 14)
             ForEach(SettingsPage.allCases) { p in
                 Button { nav.page = p } label: {
                     Label(p.title, systemImage: p.icon)
@@ -131,7 +137,7 @@ struct SettingsView: View {
                 .fontWeight(nav.page == p ? .semibold : .regular)
             }
             Spacer()
-            Text("เวอร์ชัน \(version)").font(.caption).foregroundStyle(.secondary)
+            Text(tr("เวอร์ชัน \(version)", "Version \(version)")).font(.caption).foregroundStyle(.secondary)
         }
         .padding(18)
         .frame(width: 210)
@@ -206,37 +212,51 @@ struct GeneralPage: View {
     @State private var login = SMAppService.mainApp.status == .enabled
 
     var body: some View {
-        Heading(title: "วิธีแก้คำ", icon: "slider.horizontal.3")
+        Heading(title: tr("วิธีแก้คำ", "Correction mode"), icon: "slider.horizontal.3")
         Card {
             Picker("", selection: $prefs.mode) {
-                Label("อัตโนมัติ", systemImage: "bolt").tag(Mode.auto)
-                Label("แนะนำ", systemImage: "lightbulb").tag(Mode.suggest)
-                Label("แก้เมื่อจบคำ", systemImage: "space").tag(Mode.semiAuto)
-                Label("กดแก้เอง", systemImage: "keyboard").tag(Mode.manual)
+                Label(Mode.auto.name, systemImage: "bolt").tag(Mode.auto)
+                Label(Mode.suggest.name, systemImage: "lightbulb").tag(Mode.suggest)
+                Label(Mode.semiAuto.name, systemImage: "space").tag(Mode.semiAuto)
+                Label(Mode.manual.name, systemImage: "keyboard").tag(Mode.manual)
             }
             .pickerStyle(.segmented).labelsHidden()
             .padding(.top, 10)
             Text(prefs.mode.detail).font(.callout).foregroundStyle(.secondary).padding(.vertical, 10)
         }
-        Heading(title: "การทำงาน", icon: "gearshape")
+        Heading(title: tr("การทำงาน", "Behaviour"), icon: "gearshape")
         Card {
-            ToggleRow(icon: "power", title: "เปิดใช้งาน RightType",
-                      detail: "เปิดหรือปิดได้ทุกเมื่อจากเมนูบาร์หรือ ⌃⌥Space", on: $prefs.enabled)
-            ToggleRow(icon: "play", title: "เปิดพร้อม macOS",
-                      detail: "ทำงานเงียบ ๆ ที่เมนูบาร์เมื่อเข้าสู่ระบบ", on: Binding(get: { login }, set: setLogin))
-            ToggleRow(icon: "book", title: "เรียนรู้คำใหม่",
-                      detail: "จำคำภาษาอังกฤษที่คุณพิมพ์บ่อย (3 ครั้ง) เก็บในเครื่องนี้เท่านั้น", on: $prefs.learnTyped)
-            ToggleRow(icon: "arrow.uturn.backward", title: "จำคำที่แก้กลับ",
-                      detail: "กด ⇧⌫ ย้อนคำที่ RightType แก้ให้ แปลว่าคำเดิมถูกแล้ว ครั้งหน้าจะไม่แก้อีก", on: $prefs.learnReversed)
-            ToggleRow(icon: "cursorarrow.rays", title: "แสดงป้ายข้างเคอร์เซอร์",
-                      detail: "คำแนะนำของโหมดแนะนำ (กด Tab เพื่อใช้) และข้อความหลังแก้คำ", on: $prefs.hints)
-            ToggleRow(icon: "character.book.closed", title: "แก้คำไทยที่สะกดผิดบ่อย",
-                      detail: "แก้คำสะกดผิดที่พบบ่อยราว 60 คำ เมื่อจบคำ (อัตโนมัติ / แก้เมื่อจบคำ)", on: $prefs.spelling, last: true)
+            ToggleRow(icon: "power", title: tr("เปิดใช้งาน RightType", "RightType on"),
+                      detail: tr("เปิดหรือปิดได้ทุกเมื่อจากเมนูบาร์หรือ ⌃⌥Space", "Turn it on or off anytime from the menu bar or ⌃⌥Space"), on: $prefs.enabled)
+            ToggleRow(icon: "play", title: tr("เปิดพร้อม macOS", "Start with macOS"),
+                      detail: tr("ทำงานเงียบ ๆ ที่เมนูบาร์เมื่อเข้าสู่ระบบ", "Runs quietly in the menu bar when you log in"), on: Binding(get: { login }, set: setLogin))
+            ToggleRow(icon: "book", title: tr("เรียนรู้คำใหม่", "Learn new words"),
+                      detail: tr("จำคำภาษาอังกฤษที่คุณพิมพ์บ่อย (3 ครั้ง) เก็บในเครื่องนี้เท่านั้น", "Remembers English words you type often (3 times), on this Mac only"), on: $prefs.learnTyped)
+            ToggleRow(icon: "arrow.uturn.backward", title: tr("จำคำที่แก้กลับ", "Remember words you undo"),
+                      detail: tr("กด ⇧⌫ ย้อนคำที่ RightType แก้ให้ แปลว่าคำเดิมถูกแล้ว ครั้งหน้าจะไม่แก้อีก", "Undoing a fix with ⇧⌫ means the word was right, so it is left alone next time"), on: $prefs.learnReversed)
+            ToggleRow(icon: "cursorarrow.rays", title: tr("แสดงป้ายข้างเคอร์เซอร์", "Hints at the text cursor"),
+                      detail: tr("คำแนะนำของโหมดแนะนำ (กด Tab เพื่อใช้) และข้อความหลังแก้คำ", "Suggest mode's fixes (Tab takes them) and a note after each fix"), on: $prefs.hints)
+            ToggleRow(icon: "character.book.closed", title: tr("แก้คำไทยที่สะกดผิดบ่อย", "Fix common Thai misspellings"),
+                      detail: tr("แก้คำสะกดผิดที่พบบ่อยราว 60 คำ เมื่อจบคำ (อัตโนมัติ / แก้เมื่อจบคำ)", "About 60 common misspellings, fixed when the word ends (Auto / Semi-auto)"), on: $prefs.spelling, last: true)
             Divider()
             HStack {
-                Text("คำที่เรียนรู้แล้ว: \(prefs.learnedVersion >= 0 ? prefs.learnedCount : 0)").foregroundStyle(.secondary)
+                Text(tr("คำที่เรียนรู้แล้ว: ", "Learned words: ") + "\(prefs.learnedVersion >= 0 ? prefs.learnedCount : 0)").foregroundStyle(.secondary)
                 Spacer()
-                Button { nav.page = .learned } label: { Label("แก้ไข…", systemImage: "pencil") }
+                Button { nav.page = .learned } label: { Label(tr("แก้ไข…", "Edit…"), systemImage: "pencil") }
+            }
+            .padding(.vertical, 10)
+        }
+        Heading(title: tr("ภาษา", "Language"), icon: "globe")
+        Card {
+            HStack {
+                Text(tr("ภาษาของหน้าจอ RightType", "RightType's own language"))
+                Spacer()
+                Picker("", selection: $prefs.language) {
+                    Text(tr("ตามระบบ", "As macOS")).tag(0)
+                    Text("ไทย").tag(1)
+                    Text("English").tag(2)
+                }
+                .labelsHidden().fixedSize()
             }
             .padding(.vertical, 10)
         }
@@ -246,7 +266,7 @@ struct GeneralPage: View {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            Tap.shared.onNote?("ตั้งค่าไม่สำเร็จ: \(error.localizedDescription)")
+            Tap.shared.onNote?(tr("ตั้งค่าไม่สำเร็จ: ", "Could not change it: ") + error.localizedDescription)
         }
         login = SMAppService.mainApp.status == .enabled
     }
@@ -258,35 +278,35 @@ struct KeyboardPage: View {
     @ObservedObject var prefs: Prefs
 
     var body: some View {
-        Heading(title: "แป้นพิมพ์ที่ใช้", icon: "keyboard")
+        Heading(title: tr("แป้นพิมพ์ที่ใช้", "Your keyboards"), icon: "keyboard")
         Card {
             let sources = InputSources.enabledSummary
-            row("ไทย", sources.thai.isEmpty ? "ยังไม่ได้เพิ่ม — เพิ่ม Thai (เกษมณี) ใน System Settings" : sources.thai.joined(separator: ", "),
+            row(tr("ไทย", "Thai"), sources.thai.isEmpty ? tr("ยังไม่ได้เพิ่ม — เพิ่ม Thai (เกษมณี) ใน System Settings", "Not added yet — add Thai (Kedmanee) in System Settings") : sources.thai.joined(separator: ", "),
                 ok: !sources.thai.isEmpty)
             Divider()
-            row("อังกฤษ", sources.english.isEmpty ? "ยังไม่มี — เพิ่ม ABC หรือ U.S." : sources.english.joined(separator: ", "),
+            row(tr("อังกฤษ", "English"), sources.english.isEmpty ? tr("ยังไม่มี — เพิ่ม ABC หรือ U.S.", "None yet — add ABC or U.S.") : sources.english.joined(separator: ", "),
                 ok: !sources.english.isEmpty)
             if !sources.other.isEmpty {
                 Divider()
-                row("ไม่ยุ่ง", sources.other.joined(separator: ", "), ok: true)
+                row(tr("ไม่ยุ่ง", "Left alone"), sources.other.joined(separator: ", "), ok: true)
             }
             Divider()
             HStack {
-                Text("RightType ดูว่าคีย์บอร์ดเป็นไทยหรืออังกฤษจากตัวอักษรที่แต่ละปุ่มพิมพ์ ไม่ได้ดูจากชื่อ")
+                Text(tr("RightType ดูว่าคีย์บอร์ดเป็นไทยหรืออังกฤษจากตัวอักษรที่แต่ละปุ่มพิมพ์ ไม่ได้ดูจากชื่อ", "RightType tells Thai from English by the letters each key types, not by the keyboard's name"))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("เปิดการตั้งค่าคีย์บอร์ด…") {
+                Button(tr("เปิดการตั้งค่าคีย์บอร์ด…", "Keyboard Settings…")) {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
                 }
             }
             .padding(.vertical, 10)
         }
-        Heading(title: "ระหว่างพิมพ์", icon: "text.cursor")
+        Heading(title: tr("ระหว่างพิมพ์", "While you type"), icon: "text.cursor")
         Card {
-            ToggleRow(icon: "at", title: "ที่อยู่เว็บ อีเมล และตัวเลข",
-                      detail: "พิมพ์ตอนแป้นไทยเปิดอยู่ แก้กลับให้ เช่น name@gmail.com, www.…, 100, 10:30", on: $prefs.addresses)
-            ToggleRow(icon: "character.book.closed", title: "แก้คำไทยที่สะกดผิดบ่อย",
-                      detail: "เช่น อนุญาติ → อนุญาต และอีกราว 60 คำ", on: $prefs.spelling, last: true)
+            ToggleRow(icon: "at", title: tr("ที่อยู่เว็บ อีเมล และตัวเลข", "Web addresses, email and numbers"),
+                      detail: tr("พิมพ์ตอนแป้นไทยเปิดอยู่ แก้กลับให้ เช่น name@gmail.com, www.…, 100, 10:30", "Typed with the Thai keyboard on, they come back: name@gmail.com, www.…, 100, 10:30"), on: $prefs.addresses)
+            ToggleRow(icon: "character.book.closed", title: tr("แก้คำไทยที่สะกดผิดบ่อย", "Fix common Thai misspellings"),
+                      detail: tr("เช่น อนุญาติ → อนุญาต และอีกราว 60 คำ", "Such as อนุญาติ → อนุญาต, and about 60 more"), on: $prefs.spelling, last: true)
         }
     }
 
@@ -294,7 +314,7 @@ struct KeyboardPage: View {
         HStack(alignment: .firstTextBaseline) {
             Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(ok ? .green : .orange)
-            Text(title).frame(width: 70, alignment: .leading)
+            Text(title).frame(width: 80, alignment: .leading)
             Text(value).foregroundStyle(.secondary)
             Spacer()
         }
@@ -308,19 +328,10 @@ struct ToolsPage: View {
     @State private var text = ""
     @State private var note = ""
 
-    private let transforms: [(String, Int32)] = [
-        ("แก้เฉพาะคำที่พิมพ์ผิดแป้น", RT_TRANSFORM_REPAIR), ("สลับภาษาทั้งหมด", RT_TRANSFORM_FLIP),
-        ("จัดอักษรไทยเป็นมาตรฐาน", RT_TRANSFORM_NORMALIZE), ("จัดเว้นวรรคแบบไทย", RT_TRANSFORM_SPACING),
-        ("ปี พ.ศ. ↔ ค.ศ.", RT_TRANSFORM_ERA), ("ตัวเลขเป็นคำอ่าน", RT_TRANSFORM_NUMBER_WORDS),
-        ("จำนวนเงินเป็นตัวอักษร (บาท)", RT_TRANSFORM_BAHT_WORDS), ("เลขไทย ↔ เลขอารบิก", RT_TRANSFORM_DIGITS),
-        ("ตัวพิมพ์ใหญ่ทั้งหมด", RT_TRANSFORM_UPPER), ("ตัวพิมพ์เล็กทั้งหมด", RT_TRANSFORM_LOWER),
-        ("ขึ้นต้นคำด้วยตัวใหญ่", RT_TRANSFORM_TITLE), ("สลับตัวเล็ก/ใหญ่", RT_TRANSFORM_SWAP_CASE),
-    ]
-
     var body: some View {
-        Heading(title: "ซ่อมข้อความ", icon: "doc.text")
+        Heading(title: tr("ซ่อมข้อความ", "Fix text"), icon: "doc.text")
         Card {
-            Text("วางข้อความที่พิมพ์ผิดแป้น แล้วกดแก้ คำที่พิมพ์ผิดภาษาจะถูกแก้ ที่เหลือคงเดิม")
+            Text(tr("วางข้อความที่พิมพ์ผิดแป้น แล้วกดแก้ คำที่พิมพ์ผิดภาษาจะถูกแก้ ที่เหลือคงเดิม", "Paste text typed on the wrong keyboard and press Fix. Words in the wrong language are fixed; the rest stays."))
                 .font(.callout).foregroundStyle(.secondary).padding(.top, 10)
             TextEditor(text: $text)
                 .font(.system(size: 14))
@@ -328,35 +339,35 @@ struct ToolsPage: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
                 .padding(.vertical, 8)
             HStack {
-                Button("แก้") { apply(RT_TRANSFORM_REPAIR) }.keyboardShortcut(.defaultAction)
-                Button("วางแล้วแก้") {
+                Button(tr("แก้", "Fix")) { apply(RT_TRANSFORM_REPAIR) }.keyboardShortcut(.defaultAction)
+                Button(tr("วางแล้วแก้", "Paste and fix")) {
                     text = NSPasteboard.general.string(forType: .string) ?? ""
                     apply(RT_TRANSFORM_REPAIR)
                 }
-                Menu("เปลี่ยนแบบอื่น") {
-                    ForEach(transforms, id: \.1) { t in Button(t.0) { apply(t.1) } }
+                Menu(tr("เปลี่ยนแบบอื่น", "Other changes")) {
+                    ForEach(transformList, id: \.2) { t in Button(t.0) { apply(t.2) } }
                 }
                 .fixedSize()
                 Spacer()
                 Text(note).font(.caption).foregroundStyle(.secondary)
-                Button("คัดลอก") {
+                Button(tr("คัดลอก", "Copy")) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
-                    note = "คัดลอกแล้ว"
+                    note = tr("คัดลอกแล้ว", "Copied")
                 }
             }
             .padding(.bottom, 10)
         }
-        Heading(title: "ข้อความที่เลือกในแอปอื่น", icon: "selection.pin.in.out")
+        Heading(title: tr("ข้อความที่เลือกในแอปอื่น", "Selected text in other apps"), icon: "selection.pin.in.out")
         Card {
-            Text("เลือกข้อความในแอปไหนก็ได้ แล้วกด ⌃⇧⌫ เพื่อแก้คำที่พิมพ์ผิดแป้น หรือกด ⌃⌥Space แล้วเลือกจากหมวด “ข้อความที่เลือก” (ตัวพิมพ์ใหญ่ ปี พ.ศ. จำนวนเงินเป็นตัวอักษร ฯลฯ)")
+            Text(tr("เลือกข้อความในแอปไหนก็ได้ แล้วกด ⌃⇧⌫ เพื่อแก้คำที่พิมพ์ผิดแป้น หรือกด ⌃⌥Space แล้วเลือกจากหมวด “ข้อความที่เลือก” (ตัวพิมพ์ใหญ่ ปี พ.ศ. จำนวนเงินเป็นตัวอักษร ฯลฯ)", "Select text in any app and press ⌃⇧⌫ to fix the wrong-keyboard words, or press ⌃⌥Space and pick from “Selected text” (upper case, Buddhist year, amounts in words…)"))
                 .font(.callout).foregroundStyle(.secondary).padding(.vertical, 12)
         }
     }
 
     private func apply(_ kind: Int32) {
         guard !text.isEmpty, let out = takeString(rt_transform(kind, text)) else { return }
-        note = out == text ? "ไม่มีอะไรต้องเปลี่ยน" : "แก้แล้ว"
+        note = out == text ? tr("ไม่มีอะไรต้องเปลี่ยน", "Nothing to change") : tr("แก้แล้ว", "Fixed")
         text = out
     }
 }
@@ -365,14 +376,17 @@ struct ToolsPage: View {
 
 struct HotkeysPage: View {
     private let keys: [(String, String)] = [
-        ("⇧⌫", "แก้คำล่าสุดในที่เดิม กดซ้ำเพื่อแก้ย้อนไปได้ถึง 8 คำ กดอีกทีหลังแก้ครบเพื่อย้อนกลับทั้งหมด"),
-        ("⌃⇧⌫", "แก้ข้อความที่เลือกอยู่ (ใช้คลิปบอร์ดชั่วคราว แล้วคืนของเดิมให้)"),
-        ("Tab", "ใช้คำแนะนำของโหมดแนะนำ (ภายใน 4 วินาที)"),
-        ("⌃⌥Space", "Command palette: แก้ข้อความ, เปลี่ยนข้อความที่เลือก, โหมด, หยุดชั่วคราว, ปิดในแอปนี้ และอื่น ๆ"),
+        ("⇧⌫", tr("แก้คำล่าสุดในที่เดิม กดซ้ำเพื่อแก้ย้อนไปได้ถึง 8 คำ กดอีกทีหลังแก้ครบเพื่อย้อนกลับทั้งหมด",
+                  "Fixes the last word in place. Press again to fix up to 8 words back, and once more after that to undo them all.")),
+        ("⌃⇧⌫", tr("แก้ข้อความที่เลือกอยู่ (ใช้คลิปบอร์ดชั่วคราว แล้วคืนของเดิมให้)",
+                   "Fixes the selected text (through the clipboard, which is put back afterwards).")),
+        ("Tab", tr("ใช้คำแนะนำของโหมดแนะนำ (ภายใน 4 วินาที)", "Takes Suggest mode's fix (within 4 seconds).")),
+        ("⌃⌥Space", tr("Command palette: แก้ข้อความ, เปลี่ยนข้อความที่เลือก, โหมด, หยุดชั่วคราว, ปิดในแอปนี้ และอื่น ๆ",
+                       "Command palette: fix text, change the selected text, modes, pause, off in this app, and more.")),
     ]
 
     var body: some View {
-        Heading(title: "ปุ่มลัด", icon: "bolt")
+        Heading(title: tr("ปุ่มลัด", "Hotkeys"), icon: "bolt")
         Card {
             ForEach(Array(keys.enumerated()), id: \.offset) { i, k in
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
@@ -387,7 +401,7 @@ struct HotkeysPage: View {
                 if i < keys.count - 1 { Divider() }
             }
         }
-        Text("บน Mac ใช้ ⇧⌫ (Shift+Delete) แทน Shift+Backspace ของ Windows ปุ่มที่ใช้ CapsLock บน Windows ย้ายมาอยู่ใน ⌃⌥Space")
+        Text(tr("บน Mac ใช้ ⇧⌫ (Shift+Delete) แทน Shift+Backspace ของ Windows ปุ่มที่ใช้ CapsLock บน Windows ย้ายมาอยู่ใน ⌃⌥Space", "On the Mac, ⇧⌫ (Shift+Delete) stands in for Windows' Shift+Backspace. What CapsLock does on Windows lives in ⌃⌥Space."))
             .font(.caption).foregroundStyle(.secondary)
     }
 }
@@ -402,17 +416,17 @@ struct LearnedPage: View {
 
     var body: some View {
         let words = prefs.learnedVersion >= 0 ? prefs.learnedWords : []
-        Text("คำที่ RightType จะไม่แก้ ปล่อยไว้ตามที่พิมพ์ เพิ่มคำได้ด้วยตัวเอง หรือให้ RightType จำเองเมื่อคุณกด ⇧⌫ ย้อนคำที่มันแก้")
+        Text(tr("คำที่ RightType จะไม่แก้ ปล่อยไว้ตามที่พิมพ์ เพิ่มคำได้ด้วยตัวเอง หรือให้ RightType จำเองเมื่อคุณกด ⇧⌫ ย้อนคำที่มันแก้", "Words RightType leaves as typed. Add them yourself, or RightType remembers one when you undo its fix with ⇧⌫."))
             .foregroundStyle(.secondary)
         Card {
             HStack {
-                TextField("คำใหม่ เช่น kubernetes หรือ ต๊าช", text: $word)
+                TextField(tr("คำใหม่ เช่น kubernetes หรือ ต๊าช", "A new word, such as kubernetes or ต๊าช"), text: $word)
                     .textFieldStyle(.roundedBorder).frame(width: 260)
                     .onSubmit(add)
-                Button("เพิ่ม", action: add).buttonStyle(.borderedProminent)
+                Button(tr("เพิ่ม", "Add"), action: add).buttonStyle(.borderedProminent)
                 Spacer()
-                Button("ลบ") {
-                    guard !picked.isEmpty else { note = "เลือกคำในรายการก่อน"; return }
+                Button(tr("ลบ", "Remove")) {
+                    guard !picked.isEmpty else { note = tr("เลือกคำในรายการก่อน", "Pick words in the list first"); return }
                     prefs.replaceLearned(words.filter { !picked.contains($0) })
                     picked = []
                 }
@@ -422,18 +436,18 @@ struct LearnedPage: View {
                 .frame(minHeight: 260)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.1)))
             HStack {
-                Button("นำเข้า…", action: importFile)
-                Button("ส่งออก…") { exportFile(words) }
+                Button(tr("นำเข้า…", "Import…"), action: importFile)
+                Button(tr("ส่งออก…", "Export…")) { exportFile(words) }
                 Text(note).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("ล้างทั้งหมด", role: .destructive) { confirmClear() }
+                Button(tr("ล้างทั้งหมด", "Clear all"), role: .destructive) { confirmClear() }
             }
             .padding(.vertical, 10)
         }
         HStack {
-            Text("\(words.count) คำ · บันทึกไว้ในเครื่องนี้เท่านั้น").font(.caption).foregroundStyle(.secondary)
+            Text(tr("\(words.count) คำ · บันทึกไว้ในเครื่องนี้เท่านั้น", "\(words.count) words · kept on this Mac only")).font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button("เปิดตำแหน่งไฟล์") {
+            Button(tr("เปิดตำแหน่งไฟล์", "Show the file")) {
                 NSWorkspace.shared.activateFileViewerSelecting([prefs.learnedFile()])
             }
         }
@@ -441,7 +455,7 @@ struct LearnedPage: View {
 
     private func add() {
         guard !word.isEmpty else { return }
-        if let learned = prefs.learn(word) { note = "เพิ่ม “\(learned)” แล้ว"; word = "" } else { note = "เพิ่มคำนี้ไม่ได้" }
+        if let learned = prefs.learn(word) { note = tr("เพิ่ม “\(learned)” แล้ว", "Added “\(learned)”"); word = "" } else { note = tr("เพิ่มคำนี้ไม่ได้", "Can't add this word") }
     }
 
     private func importFile() {
@@ -452,7 +466,8 @@ struct LearnedPage: View {
         let lines = text.split(whereSeparator: \.isNewline).map(String.init)
         let skipped = prefs.replaceLearned(before + lines)
         let added = prefs.learnedCount - before.count
-        note = skipped > 0 ? "เพิ่ม \(added) คำจากไฟล์แล้ว ข้าม \(skipped) บรรทัดที่ไม่ใช่คำเดียว" : "เพิ่ม \(added) คำจากไฟล์แล้ว"
+        note = skipped > 0 ? tr("เพิ่ม \(added) คำจากไฟล์แล้ว ข้าม \(skipped) บรรทัดที่ไม่ใช่คำเดียว", "Added \(added) words from the file; skipped \(skipped) lines that were not one word")
+            : tr("เพิ่ม \(added) คำจากไฟล์แล้ว", "Added \(added) words from the file")
     }
 
     private func exportFile(_ words: [String]) {
@@ -460,15 +475,15 @@ struct LearnedPage: View {
         panel.nameFieldStringValue = "RightType learned words.txt"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? (words.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
-        note = "บันทึก \(words.count) คำลงไฟล์แล้ว"
+        note = tr("บันทึก \(words.count) คำลงไฟล์แล้ว", "Saved \(words.count) words to the file")
     }
 
     private func confirmClear() {
         let alert = NSAlert()
-        alert.messageText = "ล้างคำที่จำไว้ทั้งหมด?"
-        alert.informativeText = "RightType จะลืมทุกคำที่เรียนรู้มา ย้อนไม่ได้"
-        alert.addButton(withTitle: "ล้างทั้งหมด")
-        alert.addButton(withTitle: "ยกเลิก")
+        alert.messageText = tr("ล้างคำที่จำไว้ทั้งหมด?", "Clear all learned words?")
+        alert.informativeText = tr("RightType จะลืมทุกคำที่เรียนรู้มา ย้อนไม่ได้", "RightType forgets every word it has learned. This cannot be undone.")
+        alert.addButton(withTitle: tr("ล้างทั้งหมด", "Clear all"))
+        alert.addButton(withTitle: tr("ยกเลิก", "Cancel"))
         if alert.runModal() == .alertFirstButtonReturn { prefs.clearLearned() }
     }
 }
@@ -490,16 +505,17 @@ struct SnippetsPage: View {
         ("{iso}", "2026-10-02"), ("{time}", "14:30"),
     ]
     private let steps: [(String, String)] = [
-        ("{กด Cmd+B}", "กดปุ่มลัด"), ("{รอ 300}", "รอ 300 มิลลิวินาที"), ("{คลิปบอร์ด}", "พิมพ์ข้อความที่คัดลอก"),
+        ("{กด Cmd+B}", tr("กดปุ่มลัด", "press a shortcut")), ("{รอ 300}", tr("รอ 300 มิลลิวินาที", "wait 300 ms")),
+        ("{คลิปบอร์ด}", tr("พิมพ์ข้อความที่คัดลอก", "type the copied text")),
     ]
 
     var body: some View {
-        Text("พิมพ์คำย่อแล้วกด Space หรือ Enter เพื่อแปลงเป็นข้อความเต็ม").foregroundStyle(.secondary)
+        Text(tr("พิมพ์คำย่อแล้วกด Space หรือ Enter เพื่อแปลงเป็นข้อความเต็ม", "Type a trigger and press Space or Return to get the full text.")).foregroundStyle(.secondary)
         Card {
             Table(prefs.snippets, selection: $picked) {
-                TableColumn("คำย่อ") { Text($0.trigger).font(.system(.body, design: .monospaced)) }.width(110)
-                TableColumn("ข้อความ") { Text($0.text.replacingOccurrences(of: "\n", with: " ⏎ ")).lineLimit(1) }
-                TableColumn("แป้น") { Text(scopeName($0.scope)).foregroundStyle(.secondary) }.width(90)
+                TableColumn(tr("คำย่อ", "Trigger")) { Text($0.trigger).font(.system(.body, design: .monospaced)) }.width(110)
+                TableColumn(tr("ข้อความ", "Text")) { Text($0.text.replacingOccurrences(of: "\n", with: " ⏎ ")).lineLimit(1) }
+                TableColumn(tr("แป้น", "Keyboard")) { Text(scopeName($0.scope)).foregroundStyle(.secondary) }.width(90)
             }
             .frame(minHeight: 180)
             .padding(.top, 10)
@@ -512,12 +528,12 @@ struct SnippetsPage: View {
             }
             Divider().padding(.vertical, 8)
             HStack {
-                TextField("คำย่อ เช่น ;addr", text: $trigger).textFieldStyle(.roundedBorder).frame(width: 160)
+                TextField(tr("คำย่อ เช่น ;addr", "Trigger, such as ;addr"), text: $trigger).textFieldStyle(.roundedBorder).frame(width: 160)
                 Picker("", selection: $scope) {
-                    Text("ทั้งสองแป้น").tag(Int32(2))
-                    Text("แป้นไทย").tag(Int32(0))
-                    Text("แป้นอังกฤษ").tag(Int32(1))
-                    Text("คำผิดของฉัน").tag(Int32(3))
+                    Text(scopeName(2)).tag(Int32(2))
+                    Text(scopeName(0)).tag(Int32(0))
+                    Text(scopeName(1)).tag(Int32(1))
+                    Text(scopeName(3)).tag(Int32(3))
                 }
                 .pickerStyle(.segmented).labelsHidden()
             }
@@ -527,7 +543,7 @@ struct SnippetsPage: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
                 .padding(.vertical, 8)
             HStack {
-                Menu("วันที่ / เวลา…") {
+                Menu(tr("วันที่ / เวลา…", "Date / time…")) {
                     ForEach(fields, id: \.0) { f in Button("\(f.0)  \(f.1)") { text += f.0 } }
                     Divider()
                     ForEach(steps, id: \.0) { f in Button("\(f.0)  \(f.1)") { text += f.0 } }
@@ -535,42 +551,45 @@ struct SnippetsPage: View {
                 .fixedSize()
                 Text(note).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("ลบ") {
+                Button(tr("ลบ", "Remove")) {
                     guard let picked else { return }
                     prefs.snippets.removeAll { $0.id == picked }
                     self.picked = nil
                     trigger = ""; text = ""
-                    note = "ลบแล้ว"
+                    note = tr("ลบแล้ว", "Removed")
                 }
                 .disabled(picked == nil)
-                Button("เพิ่ม / บันทึก", action: save).buttonStyle(.borderedProminent)
+                Button(tr("เพิ่ม / บันทึก", "Add / save"), action: save).buttonStyle(.borderedProminent)
             }
             .padding(.bottom, 10)
         }
-        Text("คำแนะนำ: ควรขึ้นต้นคำย่อด้วย ; (เช่น ;email) เพื่อไม่ให้ชนกับคำที่พิมพ์จริง · “คำผิดของฉัน” แก้คำที่คุณพิมพ์ผิดประจำเป็นคำที่ถูก (อัตโนมัติ / แก้เมื่อจบคำ) · ใส่ปุ่มลัดได้ เช่น {กด Cmd+B}ตัวหนา{กด Cmd+B}")
+        Text(tr("คำแนะนำ: ควรขึ้นต้นคำย่อด้วย ; (เช่น ;email) เพื่อไม่ให้ชนกับคำที่พิมพ์จริง · “คำผิดของฉัน” แก้คำที่คุณพิมพ์ผิดประจำเป็นคำที่ถูก (อัตโนมัติ / แก้เมื่อจบคำ) · ใส่ปุ่มลัดได้ เช่น {กด Cmd+B}ตัวหนา{กด Cmd+B}", "Tip: start a trigger with ; (such as ;email) so it never clashes with a real word · “My typo” fixes a word you often mistype (Auto / Semi-auto) · Shortcuts work too, such as {กด Cmd+B}bold{กด Cmd+B}"))
             .font(.caption).foregroundStyle(.secondary)
     }
 
     private func scopeName(_ s: Int32) -> String {
-        ["แป้นไทย", "แป้นอังกฤษ", "ทั้งสองแป้น", "คำผิดของฉัน"][Int(s)]
+        [tr("แป้นไทย", "Thai only"), tr("แป้นอังกฤษ", "English only"), tr("ทั้งสองแป้น", "Either"), tr("คำผิดของฉัน", "My typo")][Int(s)]
     }
 
     private func save() {
         let t = trigger.trimmingCharacters(in: .whitespaces)
         let problem = rt_snippet_check(t, text, scope)
-        let messages = [1: "คำย่อต้องยาว 2–32 ตัวอักษร", 2: "คำย่อต้องไม่มีช่องว่าง", 3: "ใส่ข้อความที่ต้องการ",
-                        4: "ข้อความยาวเกินไป (ไม่เกิน 1,000 ตัวอักษร)",
-                        5: "คำสั่งในวงเล็บปีกกาใช้ไม่ได้ ปุ่มเขียนแบบ {กด Cmd+B} หรือ {กด Enter}",
-                        6: "{คำสั่ง …} และ {สไตล์ …} มีเฉพาะบน Windows"]
+        let messages = [1: tr("คำย่อต้องยาว 2–32 ตัวอักษร", "A trigger is 2 to 32 characters"),
+                        2: tr("คำย่อต้องไม่มีช่องว่าง", "A trigger has no spaces"),
+                        3: tr("ใส่ข้อความที่ต้องการ", "Write the text it becomes"),
+                        4: tr("ข้อความยาวเกินไป (ไม่เกิน 1,000 ตัวอักษร)", "The text is too long (1,000 characters at most)"),
+                        5: tr("คำสั่งในวงเล็บปีกกาใช้ไม่ได้ ปุ่มเขียนแบบ {กด Cmd+B} หรือ {กด Enter}",
+                              "A command in braces is not right: keys are written {กด Cmd+B} or {กด Enter}"),
+                        6: tr("{คำสั่ง …} และ {สไตล์ …} มีเฉพาะบน Windows", "{คำสั่ง …} and {สไตล์ …} are Windows only")]
         if let message = messages[Int(problem)] { note = message; return }
         var list = prefs.snippets
         list.removeAll { $0.trigger == t || $0.id == picked }
-        guard list.count < 200 else { note = "มีคำย่อได้ไม่เกิน 200 รายการ"; return }
+        guard list.count < 200 else { note = tr("มีคำย่อได้ไม่เกิน 200 รายการ", "200 snippets at most"); return }
         list.append(Snippet(trigger: t, text: text.replacingOccurrences(of: "\r\n", with: "\n"), scope: scope))
         list.sort { $0.trigger.localizedCompare($1.trigger) == .orderedAscending }
         prefs.snippets = list
         picked = t
-        note = "บันทึกแล้ว"
+        note = tr("บันทึกแล้ว", "Saved")
     }
 }
 
@@ -583,7 +602,7 @@ struct AppsPage: View {
     @State private var picked: Set<String> = []
 
     var body: some View {
-        Text("แต่ละแอปตั้งโหมดของตัวเองได้ แทนโหมดปกติ (\(prefs.mode.name)) โปรแกรมเขียนโค้ดเริ่มที่โหมดกดแก้เอง ชื่อตัวแปรและคำสงวนจะไม่ถูกแก้ระหว่างพิมพ์ กด ⇧⌫ เมื่ออยากแก้คำที่พิมพ์ผิดภาษา")
+        Text(tr("แต่ละแอปตั้งโหมดของตัวเองได้ แทนโหมดปกติ (\(prefs.mode.name)) โปรแกรมเขียนโค้ดเริ่มที่โหมดกดแก้เอง ชื่อตัวแปรและคำสงวนจะไม่ถูกแก้ระหว่างพิมพ์ กด ⇧⌫ เมื่ออยากแก้คำที่พิมพ์ผิดภาษา", "Each app can have a mode of its own instead of the default (\(prefs.mode.name)). Code editors start in Manual mode, so names and keywords are not changed as you type; press ⇧⌫ to fix a word typed on the wrong keyboard."))
             .foregroundStyle(.secondary)
         Card {
             let apps = prefs.appsWithModes.sorted { appName($0).localizedCompare(appName($1)) == .orderedAscending }
@@ -602,11 +621,10 @@ struct AppsPage: View {
                         set: { prefs.setAppMode(id, $0 < 0 ? nil : Mode(rawValue: $0)) }
                     )) {
                         // The labels of the Windows tray's "ในแอปนี้" submenu.
-                        Text("ใช้โหมดปกติ").tag(-1)
+                        Text(AppDelegate.appModeLabel(nil)).tag(-1)
                         Divider()
                         ForEach([Mode.auto, .suggest, .manual, .semiAuto, .off], id: \.self) { m in
-                            Text(m == .off ? "ปิดในแอปนี้" : "โหมด\(m.name)")
-                                .tag(m.rawValue)
+                            Text(AppDelegate.appModeLabel(m)).tag(m.rawValue)
                         }
                     }
                     .labelsHidden()
@@ -616,19 +634,19 @@ struct AppsPage: View {
             .frame(minHeight: 320)
             .padding(.top, 10)
             HStack {
-                Menu("เพิ่มจากแอปที่เปิดอยู่…") {
+                Menu(tr("เพิ่มจากแอปที่เปิดอยู่…", "Add open app…")) {
                     ForEach(runningApps(), id: \.0) { app in
                         Button(app.1) { prefs.setAppMode(app.0, .manual) }
                     }
                 }
                 .fixedSize()
-                Button("เพิ่มแอปอื่น…", action: pickApp)
+                Button(tr("เพิ่มแอปอื่น…", "Add other app…"), action: pickApp)
                 Spacer()
-                Button("คืนค่าเริ่มต้น") {
+                Button(tr("คืนค่าเริ่มต้น", "Reset")) {
                     prefs.appModes = [:]
                     prefs.excluded = Array(defaultExcluded)
                 }
-                Button("ลบออก") {
+                Button(tr("ลบออก", "Remove")) {
                     for id in picked {
                         prefs.excluded.removeAll { $0 == id }
                         prefs.appModes[id] = codeEditors.contains(id) ? -1 : nil
@@ -639,7 +657,7 @@ struct AppsPage: View {
             }
             .padding(.vertical, 10)
         }
-        Text("แอปที่เพิ่มใหม่เริ่มที่โหมดกดแก้เอง เปลี่ยนได้จากเมนูท้ายแถว · RightType ยกเว้นช่องรหัสผ่านเสมอ (macOS ไม่ส่งปุ่มให้แอปไหนดักได้) · ตั้งโหมดของแอปที่ใช้อยู่ได้จากเมนู Aก หรือ ⌃⌥Space ด้วย")
+        Text(tr("แอปที่เพิ่มใหม่เริ่มที่โหมดกดแก้เอง เปลี่ยนได้จากเมนูท้ายแถว · RightType ยกเว้นช่องรหัสผ่านเสมอ (macOS ไม่ส่งปุ่มให้แอปไหนดักได้) · ตั้งโหมดของแอปที่ใช้อยู่ได้จากเมนู Aก หรือ ⌃⌥Space ด้วย", "An app added here starts in Manual mode; change it from the menu at the end of its row · Password fields are always left alone (macOS passes their keys to no app) · The app you are in can be set from the Aก menu or ⌃⌥Space too"))
             .font(.caption).foregroundStyle(.secondary)
     }
 
@@ -679,25 +697,28 @@ func appIcon(_ id: String) -> NSImage? {
 
 struct PrivacyPage: View {
     var body: some View {
-        Heading(title: "ความเป็นส่วนตัว", icon: "lock")
+        Heading(title: tr("ความเป็นส่วนตัว", "Privacy"), icon: "lock")
         Card {
-            item("wifi.slash", "ไม่ต่ออินเทอร์เน็ต", "ทุกอย่างทำงานบนเครื่องคุณ ไม่มีโค้ดเครือข่าย ไม่มีการส่งข้อมูลออก")
+            item("wifi.slash", tr("ไม่ต่ออินเทอร์เน็ต", "Never connects to the internet"),
+                 tr("ทุกอย่างทำงานบนเครื่องคุณ ไม่มีโค้ดเครือข่าย ไม่มีการส่งข้อมูลออก", "Everything runs on your Mac. There is no network code and nothing is sent anywhere."))
             Divider()
-            item("eye.slash", "ไม่เก็บข้อความที่พิมพ์", "เก็บแค่คำที่กำลังพิมพ์ในหน่วยความจำแล้วล้างทิ้ง ช่องรหัสผ่านและแอปในรายการที่ไม่ใช้จะถูกข้าม")
+            item("eye.slash", tr("ไม่เก็บข้อความที่พิมพ์", "Keeps no typed text"),
+                 tr("เก็บแค่คำที่กำลังพิมพ์ในหน่วยความจำแล้วล้างทิ้ง ช่องรหัสผ่านและแอปในรายการที่ไม่ใช้จะถูกข้าม", "Only the word being typed is held in memory, then wiped. Password fields and ignored apps are skipped."))
             Divider()
-            item("trash", "ล้างข้อมูลที่จำไว้ได้ทุกเมื่อ", "สิ่งเดียวที่บันทึกลงดิสก์คือคำที่จำไว้และคำย่อที่คุณตั้งเอง ดูและลบได้ที่หน้า “คำที่จำไว้” และ “คำย่อ”")
+            item("trash", tr("ล้างข้อมูลที่จำไว้ได้ทุกเมื่อ", "Clear remembered data anytime"),
+                 tr("สิ่งเดียวที่บันทึกลงดิสก์คือคำที่จำไว้และคำย่อที่คุณตั้งเอง ดูและลบได้ที่หน้า “คำที่จำไว้” และ “คำย่อ”", "The only things saved to disk are learned words and your snippets. See and remove them on the “Learned words” and “Snippets” pages."))
         }
-        Heading(title: "เกี่ยวกับ", icon: "info.circle")
+        Heading(title: tr("เกี่ยวกับ", "About"), icon: "info.circle")
         Card {
             VStack(alignment: .leading, spacing: 6) {
-                Text("RightType \(version) สำหรับ macOS")
-                Text("พอร์ตจาก RightType ของ Windows ใช้แกน Rust ตัวเดียวกัน (ดิกชันนารีและกฎเดียวกัน)")
+                Text(tr("RightType \(version) สำหรับ macOS", "RightType \(version) for macOS"))
+                Text(tr("พอร์ตจาก RightType ของ Windows ใช้แกน Rust ตัวเดียวกัน (ดิกชันนารีและกฎเดียวกัน)", "A port of RightType for Windows, on the same Rust core (the same dictionaries and rules)."))
                     .font(.callout).foregroundStyle(.secondary)
-                Text("ซอฟต์แวร์ฟรี ภายใต้ MIT หรือ Apache-2.0").font(.callout).foregroundStyle(.secondary)
+                Text(tr("ซอฟต์แวร์ฟรี ภายใต้ MIT หรือ Apache-2.0", "Free software under MIT or Apache-2.0")).font(.callout).foregroundStyle(.secondary)
                 HStack {
-                    Link("RightType ต้นฉบับบน GitHub", destination: URL(string: "https://github.com/k-affan-th/RightType")!)
+                    Link(tr("RightType ต้นฉบับบน GitHub", "The original RightType on GitHub"), destination: URL(string: "https://github.com/k-affan-th/RightType")!)
                     Text("·").foregroundStyle(.secondary)
-                    Link("ดาวน์โหลดเวอร์ชันใหม่", destination: URL(string: "https://github.com/k-affan-th/RightType/releases")!)
+                    Link(tr("ดาวน์โหลดเวอร์ชันใหม่", "Download the latest version"), destination: URL(string: "https://github.com/soraxtend/right-type-mac/releases")!)
                 }
                 .padding(.top, 4)
             }

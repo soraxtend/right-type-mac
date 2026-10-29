@@ -8,6 +8,8 @@ enum SelfTest {
     private static let source = CGEventSource(stateID: .hidSystemState)
 
     static func run() {
+        // The checks find palette commands by their Thai titles.
+        uiThaiOverride = true
         window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 480, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "RightType self-test"

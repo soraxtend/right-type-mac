@@ -5,7 +5,7 @@ import AppKit
 enum Selection {
     /// Fix the words typed on the wrong keyboard (or flip the whole text).
     static func fix() {
-        transform(note: "แก้ข้อความที่เลือกแล้ว") { takeString(rt_repair($0)) }
+        transform(note: tr("แก้ข้อความที่เลือกแล้ว", "Fixed the selected text")) { takeString(rt_repair($0)) }
     }
 
     /// Change the selection with one of the core's transforms (`RT_TRANSFORM_*`).
@@ -35,13 +35,13 @@ enum Selection {
         Inject.key(Keys.c, flags: .maskCommand)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             guard pb.changeCount != before, let text = pb.string(forType: .string), !text.isEmpty else {
-                Tap.shared.onNote?("ไม่มีข้อความที่เลือก")
+                Tap.shared.onNote?(tr("ไม่มีข้อความที่เลือก", "No text is selected"))
                 return
             }
             guard let fixed = change(text) else { return }
             if fixed == text {
                 restore(pb, saved)
-                Tap.shared.onNote?("ไม่มีอะไรต้องเปลี่ยน")
+                Tap.shared.onNote?(tr("ไม่มีอะไรต้องเปลี่ยน", "Nothing to change"))
                 return
             }
             pb.clearContents()

@@ -17,22 +17,31 @@ enum Mode: Int {
 
     var name: String {
         switch self {
-        case .off: return "ปิด"
-        case .manual: return "กดแก้เอง"
-        case .semiAuto: return "แก้เมื่อจบคำ"
-        case .auto: return "อัตโนมัติ"
-        case .suggest: return "แนะนำ"
+        case .off: return tr("ปิด", "Off")
+        case .manual: return tr("กดแก้เอง", "Manual")
+        case .semiAuto: return tr("แก้เมื่อจบคำ", "Semi-auto")
+        case .auto: return tr("อัตโนมัติ", "Auto")
+        case .suggest: return tr("แนะนำ", "Suggest")
         }
+    }
+
+    /// "Auto mode", or "Off".
+    var title: String {
+        self == .off ? name : tr("โหมด\(name)", "\(name) mode")
     }
 
     /// What the mode does, in one line (the settings page and the menu).
     var detail: String {
         switch self {
-        case .off: return "RightType ไม่ทำอะไร"
-        case .manual: return "ไม่แก้ข้อความเอง กด ⇧⌫ เพื่อแก้คำล่าสุด"
-        case .semiAuto: return "แก้คำที่พิมพ์ผิดภาษาเมื่อเคาะวรรคหรือ Enter แล้วสลับคีย์บอร์ดให้"
-        case .auto: return "แก้และสลับภาษาให้ทันทีระหว่างพิมพ์ ไม่ต้องรอวรรค ⇧⌫ ย้อนได้"
-        case .suggest: return "แสดงคำที่แก้แล้วข้างเคอร์เซอร์ กด Tab เพื่อใช้ ไม่แตะข้อความเอง"
+        case .off: return tr("RightType ไม่ทำอะไร", "RightType does nothing.")
+        case .manual: return tr("ไม่แก้ข้อความเอง กด ⇧⌫ เพื่อแก้คำล่าสุด",
+                                "Never changes text by itself. Press ⇧⌫ to fix the last word.")
+        case .semiAuto: return tr("แก้คำที่พิมพ์ผิดภาษาเมื่อเคาะวรรคหรือ Enter แล้วสลับคีย์บอร์ดให้",
+                                  "Fixes a word typed on the wrong keyboard when you press Space or Return, and switches the keyboard.")
+        case .auto: return tr("แก้และสลับภาษาให้ทันทีระหว่างพิมพ์ ไม่ต้องรอวรรค ⇧⌫ ย้อนได้",
+                              "Fixes and switches as you type, without waiting for a space. ⇧⌫ undoes it.")
+        case .suggest: return tr("แสดงคำที่แก้แล้วข้างเคอร์เซอร์ กด Tab เพื่อใช้ ไม่แตะข้อความเอง",
+                                 "Shows the fixed word by the text cursor; Tab takes it. Never changes text by itself.")
         }
     }
 }
@@ -244,11 +253,11 @@ final class Tap {
         InputSources.select(action.layout)
         guard Prefs.shared.hints else { return }
         switch action.note {
-        case RT_NOTE_FIXED: onNote?(auto ? "แก้ให้แล้ว · ⇧⌫ ย้อนกลับ" : "แก้แล้ว")
-        case RT_NOTE_FIXED_MANY: onNote?("แก้ \(action.words) คำ")
-        case RT_NOTE_REVERTED: onNote?("ย้อนกลับแล้ว")
-        case RT_NOTE_NOTHING: onNote?("ไม่มีคำให้แก้")
-        case RT_NOTE_TYPO: onNote?("แก้คำสะกดผิดแล้ว · ⇧⌫ ย้อนกลับ")
+        case RT_NOTE_FIXED: onNote?(auto ? tr("แก้ให้แล้ว · ⇧⌫ ย้อนกลับ", "Fixed · ⇧⌫ to undo") : tr("แก้แล้ว", "Fixed"))
+        case RT_NOTE_FIXED_MANY: onNote?(tr("แก้ \(action.words) คำ", "Fixed \(action.words) words"))
+        case RT_NOTE_REVERTED: onNote?(tr("ย้อนกลับแล้ว", "Undone"))
+        case RT_NOTE_NOTHING: onNote?(tr("ไม่มีคำให้แก้", "Nothing to fix"))
+        case RT_NOTE_TYPO: onNote?(tr("แก้คำสะกดผิดแล้ว · ⇧⌫ ย้อนกลับ", "Fixed the spelling · ⇧⌫ to undo"))
         default: break
         }
     }

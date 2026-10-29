@@ -65,6 +65,9 @@ final class Prefs: ObservableObject {
     @Published var pausedUntil: Date?
     /// Bumped when the learned words change, so pages showing them redraw.
     @Published var learnedVersion = 0
+    /// The interface language (`i18n::Lang` on Windows): 0 follows macOS,
+    /// 1 Thai, 2 English.
+    @Published var language: Int { didSet { save("language", language) } }
 
     private init() {
         defaults.register(defaults: [
@@ -88,6 +91,7 @@ final class Prefs: ObservableObject {
         excluded = defaults.stringArray(forKey: "excluded") ?? Array(defaultExcluded)
         appModes = defaults.dictionary(forKey: "appModes") as? [String: Int] ?? [:]
         snippets = defaults.data(forKey: "snippets").flatMap { try? JSONDecoder().decode([Snippet].self, from: $0) } ?? []
+        language = defaults.integer(forKey: "language")
     }
 
     /// Load the learned words and hand every setting to the core.
@@ -217,6 +221,24 @@ extension Notification.Name {
     /// The mode, pause or enabled state changed: the menu bar icon follows.
     static let rightTypeStateChanged = Notification.Name("RightTypeStateChanged")
 }
+
+/// The self-test and `--render-settings` pick the language themselves.
+var uiThaiOverride: Bool?
+
+/// Thai for the interface? Following macOS, Thai when Thai is anywhere in
+/// the preferred languages: whoever types Thai reads it, though many keep
+/// macOS itself in English.
+var uiThai: Bool {
+    if let uiThaiOverride { return uiThaiOverride }
+    switch Prefs.shared.language {
+    case 1: return true
+    case 2: return false
+    default: return Locale.preferredLanguages.contains { $0.hasPrefix("th") }
+    }
+}
+
+/// `th` or `en`, in the interface language.
+func tr(_ th: String, _ en: String) -> String { uiThai ? th : en }
 
 /// A string the core returned, released.
 func takeString(_ p: UnsafeMutablePointer<CChar>?) -> String? {
