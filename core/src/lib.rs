@@ -10,19 +10,30 @@
 //! for Shift+Backspace across several words, and the seed-phrase guard.
 //!
 //! Modes, as the app names them: Manual (Shift+Backspace only), Semi-auto
-//! (`autofix`: judge a word when it ends) and Auto (`live` as well: fix Thai
-//! typed on the English layout while it is typed).
+//! (judge a word when it ends), Auto (also fix Thai typed on the English
+//! layout while it is typed) and Suggest (show the fix; Tab takes it).
+//!
+//! Beyond the Windows hook's core path this side also owns the typist's
+//! snippets (`righttype::snippets`, `righttype::macros`), the learned words
+//! kept across launches (`learn`) and the selection transforms the palette
+//! offers.
+
+mod learn;
 
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
+use std::time::{Duration, Instant};
 
 use righttype::buffer::{Key, WordBuffer};
+use righttype::code;
+use righttype::detect::{Confidence, Detection, Evidence};
 use righttype::dict::{self, Dictionary};
 use righttype::layout::{auto_convert, en_to_th};
 use righttype::policy::{self, InputLayout, Reading};
 use righttype::recent::Recent;
 use righttype::render;
 use righttype::secret::SeedTracker;
+use righttype::snippets::{self, Scope, Snippet};
 use zeroize::Zeroize;
 
 /// Layout codes shared with Swift.
@@ -40,6 +51,55 @@ pub const RT_NOTE_FIXED_MANY: i32 = 2;
 pub const RT_NOTE_REVERTED: i32 = 3;
 /// Shift+Backspace found nothing to flip.
 pub const RT_NOTE_NOTHING: i32 = 4;
+/// A snippet's trigger became its text.
+pub const RT_NOTE_SNIPPET: i32 = 5;
+/// One of the typist's own misspellings put right.
+pub const RT_NOTE_TYPO: i32 = 6;
+
+/// Modes, as the app numbers them.
+pub const RT_MODE_OFF: i32 = 0;
+pub const RT_MODE_MANUAL: i32 = 1;
+pub const RT_MODE_SEMI_AUTO: i32 = 2;
+pub const RT_MODE_AUTO: i32 = 3;
+pub const RT_MODE_SUGGEST: i32 = 4;
+/// For code editors (`righttype::code`): names and keywords are left alone,
+/// Thai is put right only in comments and strings, Thai keys typed for code
+/// come back as English.
+pub const RT_MODE_CODE: i32 = 5;
+
+/// Tab takes a Suggest hint only this soon after it appeared (`hook::SUGGEST_TAB_WINDOW`).
+const SUGGEST_TAB_WINDOW: Duration = Duration::from_secs(4);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Manual,
+    SemiAuto,
+    Auto,
+    Suggest,
+    Code,
+}
+
+impl Mode {
+    fn from_code(code: i32) -> Mode {
+        match code {
+            RT_MODE_SEMI_AUTO => Mode::SemiAuto,
+            RT_MODE_AUTO => Mode::Auto,
+            RT_MODE_SUGGEST => Mode::Suggest,
+            RT_MODE_CODE => Mode::Code,
+            _ => Mode::Manual,
+        }
+    }
+
+    /// Fixes a word on its own when it ends.
+    fn autofix(self) -> bool {
+        matches!(self, Mode::SemiAuto | Mode::Auto)
+    }
+
+    /// Fixes Thai typed on the English layout while it is typed.
+    fn live(self) -> bool {
+        self == Mode::Auto
+    }
+}
 
 /// An edit for the app to make before the caret.
 #[repr(C)]
@@ -57,9 +117,16 @@ pub struct RtAction {
     /// Words flipped, for `RT_NOTE_FIXED_MANY`.
     pub words: u32,
     /// The key that led to this action never reaches the app (the edit
-    /// stands in for it). When false the action is only a layout switch, made
-    /// as the key goes through.
+    /// stands in for it). When false the action is only a layout switch or a
+    /// hint, made as the key goes through.
     pub swallow: bool,
+    /// Suggest: the word as it would be fixed, to show by the caret (Tab
+    /// takes it), or NULL. Owned, like `insert`.
+    pub hint: *mut c_char,
+    /// A macro snippet's steps, one per line, for the app to run after the
+    /// edit, or NULL: `T<text>`, `K<virtual keys, comma-separated>`,
+    /// `W<milliseconds>`, `C` (type the clipboard). Owned, like `insert`.
+    pub steps: *mut c_char,
 }
 
 impl RtAction {
@@ -72,6 +139,8 @@ impl RtAction {
             note: RT_NOTE_NONE,
             words: 0,
             swallow: true,
+            hint: ptr::null_mut(),
+            steps: ptr::null_mut(),
         }
     }
 }
@@ -100,6 +169,22 @@ impl Drop for Owned {
     }
 }
 
+/// A Suggest hint for the word just ended (`hook::SuggestionRecord`).
+struct Suggestion {
+    /// The word as on screen.
+    original: String,
+    corrected: String,
+    boundary: char,
+    at: Instant,
+}
+
+impl Drop for Suggestion {
+    fn drop(&mut self) {
+        self.original.zeroize();
+        self.corrected.zeroize();
+    }
+}
+
 pub struct Engine {
     en: &'static Dictionary,
     th: &'static Dictionary,
@@ -110,6 +195,16 @@ pub struct Engine {
     seed: SeedTracker,
     /// Whether a flip-back teaches the dictionaries (off in tests, which share them).
     learns: bool,
+    snippets: Vec<Snippet>,
+    /// Suggest: the fix offered for the word just ended.
+    suggestion: Option<Suggestion>,
+    /// Suggest: when a hint for the word in progress was shown.
+    live_hint: Option<Instant>,
+    /// Common Thai misspellings put right when a word ends (`righttype::spelling`).
+    spelling: bool,
+    /// Code mode: whether the caret is in a comment or string, read from the
+    /// line before the boundary (`None`: the editor did not say).
+    prose: Option<bool>,
 }
 
 impl Default for Engine {
@@ -129,24 +224,32 @@ impl Engine {
             owned: None,
             seed: SeedTracker::new(),
             learns: true,
+            snippets: Vec::new(),
+            suggestion: None,
+            live_hint: None,
+            spelling: false,
+            prose: None,
         }
     }
 
     /// One printable key, named by the character it types on US QWERTY
     /// (upper case and symbols mean Shift is held), typed on `layout`.
-    /// `Some` when the key is swallowed and the action typed instead.
+    /// `Some` when there is something to do: the key is then swallowed and
+    /// the action typed instead, unless `swallow` is false (a Suggest hint).
     ///
     /// The key is kept as Kedmanee would type it rather than as the app shows
     /// it: macOS's Thai layout differs from Kedmanee on two keys (`` ` `` and
     /// `3`), and the conversion tables are Kedmanee's.
-    pub fn key(&mut self, key: char, layout: InputLayout, live: bool) -> Option<RtAction> {
+    pub fn key(&mut self, key: char, layout: InputLayout, mode: Mode) -> Option<RtAction> {
         let produced = match layout {
             InputLayout::UsQwerty => key,
             InputLayout::ThaiKedmanee => en_to_th(&key.to_string()).chars().next().unwrap_or(key),
         };
+        self.suggestion = None;
+        self.live_hint = None;
         self.recent.end_chain();
         self.buf.observe(Key::Char(produced));
-        if live && self.mark == Mark::Plain && layout == InputLayout::UsQwerty {
+        if mode.live() && self.mark == Mark::Plain && layout == InputLayout::UsQwerty {
             if let Some(action) = self.reconcile_run() {
                 return Some(action);
             }
@@ -154,16 +257,21 @@ impl Engine {
         if self.buf.is_poisoned() || self.buf.current().is_empty() {
             self.mark = Mark::Plain;
         }
+        if mode == Mode::Suggest && self.mark == Mark::Plain && layout == InputLayout::UsQwerty {
+            return self.live_hint();
+        }
         None
     }
 
     /// Backspace. `Some` when it is swallowed: the run shown as Thai is
     /// re-rendered for the shorter keys instead.
-    pub fn backspace(&mut self, live: bool) -> Option<RtAction> {
+    pub fn backspace(&mut self, mode: Mode) -> Option<RtAction> {
+        self.suggestion = None;
+        self.live_hint = None;
         self.buf.observe(Key::Backspace);
         // The text before the caret is no longer what `recent` recorded.
         self.recent.clear();
-        if live && self.owned.is_some() && self.mark == Mark::Plain {
+        if mode.live() && self.owned.is_some() && self.mark == Mark::Plain {
             if let Some(action) = self.reconcile_run() {
                 return Some(action);
             }
@@ -180,6 +288,8 @@ impl Engine {
         self.buf.clear();
         self.mark = Mark::Plain;
         self.owned = None;
+        self.suggestion = None;
+        self.live_hint = None;
         if also_recent {
             self.recent.clear();
             self.seed.reset();
@@ -195,13 +305,18 @@ impl Engine {
         });
         self.buf.clear();
         self.mark = Mark::Plain;
+        self.suggestion = None;
+        self.live_hint = None;
         action
     }
 
     /// Space, Return or Tab. `Some` when the word is changed (the boundary is
     /// then swallowed and re-sent by the action), or — `swallow` false — when
-    /// a Thai run stands and only the layout follows it.
-    pub fn boundary(&mut self, boundary: char, layout: InputLayout, autofix: bool) -> Option<RtAction> {
+    /// a Thai run stands and only the layout follows it, or Suggest offers a
+    /// fix.
+    pub fn boundary(&mut self, boundary: char, layout: InputLayout, mode: Mode) -> Option<RtAction> {
+        self.suggestion = None;
+        self.live_hint = None;
         let Some(mut word) = self.buf.observe(Key::Boundary) else {
             // Nothing (or something too long to judge) before the boundary.
             self.owned = None;
@@ -228,15 +343,68 @@ impl Engine {
             screen = owned.rendered.clone();
         }
 
+        // A snippet's trigger: its text instead, in every mode.
+        if let Some(snippet) = snippets::find(&self.snippets, &screen, layout) {
+            let action = expand(&screen, boundary, &snippet.text);
+            self.recent.clear();
+            word.zeroize();
+            screen.zeroize();
+            return Some(action);
+        }
+
         let converted = mark == Mark::Converted;
-        let mut detection = match (autofix, mark) {
+        let judge = mode.autofix() || matches!(mode, Mode::Suggest | Mode::Code);
+        let mut detection = match (judge, mark) {
             (false, _) | (_, Mark::Decided) => None,
             (true, Mark::Converted) => policy::revise_converted(&word, self.en, self.th),
             (true, Mark::Plain) => policy::detect_token(&word, layout, self.en, self.th),
         };
         let corrected = detection.as_ref().map(|d| d.corrected.as_str());
-        if self.seed.observe_candidate(&word, corrected) {
+        let seed_run = self.seed.observe_candidate(&word, corrected);
+        if seed_run {
             detection = None;
+        }
+        if !seed_run && self.learns && policy::allows_learning(Some(layout), detection.is_some()) {
+            learn::observe(&word);
+        }
+
+        // Code mode (`hook`'s): names stay, Thai only in comments and
+        // strings, Thai keys typed for code come back as English. Where the
+        // line cannot be read, the fix is offered instead of made.
+        let prose = self.prose.take();
+        let mut code_hint = false;
+        if mode == Mode::Code && !seed_run && mark != Mark::Decided {
+            let verdict = code::verdict(&word, layout, detection.as_ref().map(|d| d.corrected.as_str()), prose, self.th);
+            detection = match verdict {
+                code::Verdict::Fix(corrected) => Some(found(corrected)),
+                code::Verdict::Hint(corrected) => {
+                    code_hint = true;
+                    Some(found(corrected))
+                }
+                code::Verdict::Leave => None,
+            };
+        }
+
+        if (mode == Mode::Suggest || code_hint) && mark != Mark::Decided {
+            // Nothing changes on screen: the fix is shown, and Tab takes it.
+            // Only after a space: Return may have sent the text, Tab moved on.
+            let action = match detection {
+                Some(d) if boundary == ' ' && screen == word => {
+                    let hint = owned_string(&d.corrected);
+                    self.suggestion = Some(Suggestion {
+                        original: word.clone(),
+                        corrected: d.corrected.clone(),
+                        boundary,
+                        at: Instant::now(),
+                    });
+                    Some(RtAction { hint, swallow: false, ..RtAction::empty() })
+                }
+                _ => None,
+            };
+            self.remember(&screen, boundary, converted);
+            word.zeroize();
+            screen.zeroize();
+            return action;
         }
 
         let (mut text, kept_converted, to, note) = match detection {
@@ -244,11 +412,21 @@ impl Engine {
                 let to = layout_code(&d.corrected);
                 (d.corrected, true, to, RT_NOTE_FIXED)
             }
-            // Thai typed in a wrong order (เเ for แ): the word put right.
-            None if autofix && mark != Mark::Decided && layout == InputLayout::ThaiKedmanee => {
-                match policy::thai_spelling(&word, self.th) {
-                    Some(fixed) => (fixed, false, RT_LAYOUT_NONE, RT_NOTE_NONE),
-                    None => (word.clone(), converted, RT_LAYOUT_NONE, RT_NOTE_NONE),
+            None if mode.autofix() && mark != Mark::Decided && !seed_run => {
+                if let Some(right) = snippets::find_typo(&self.snippets, &word) {
+                    // One of the typist's own misspellings.
+                    (right.to_string(), false, RT_LAYOUT_NONE, RT_NOTE_TYPO)
+                } else if layout == InputLayout::ThaiKedmanee {
+                    // Thai typed in a wrong order (เเ for แ), or misspelt.
+                    match policy::thai_spelling(&word, self.th) {
+                        Some(fixed) => (fixed, false, RT_LAYOUT_NONE, RT_NOTE_NONE),
+                        None => match self.spelling.then(|| righttype::spelling::fix(&word, self.th)).flatten() {
+                            Some((fixed, _, _)) => (fixed, false, RT_LAYOUT_NONE, RT_NOTE_TYPO),
+                            None => (word.clone(), converted, RT_LAYOUT_NONE, RT_NOTE_NONE),
+                        },
+                    }
+                } else {
+                    (word.clone(), converted, RT_LAYOUT_NONE, RT_NOTE_NONE)
                 }
             }
             None => (word.clone(), converted, RT_LAYOUT_NONE, RT_NOTE_NONE),
@@ -265,10 +443,80 @@ impl Engine {
         action
     }
 
+    /// Code mode, before a boundary: whether the word just typed is one whose
+    /// fate depends on the line (a comment or string, or code), so the app
+    /// should read it for `code_line`.
+    pub fn code_wants_line(&self, layout: InputLayout) -> bool {
+        let word = self.buf.current();
+        if word.is_empty() || self.buf.is_poisoned() {
+            return false;
+        }
+        match layout {
+            InputLayout::UsQwerty => {
+                !code::looks_like_identifier(word) && policy::detect_token(word, layout, self.en, self.th).is_some()
+            }
+            InputLayout::ThaiKedmanee => {
+                code::thai_keys_look_like_code(word, self.th)
+                    && policy::detect_token(word, layout, self.en, self.th).is_none()
+            }
+        }
+    }
+
+    /// The text before the caret, for the next boundary in Code mode.
+    pub fn code_line(&mut self, before: Option<&str>) {
+        self.prose = before.map(code::line_is_prose);
+    }
+
+    /// Tab, before it is taken as a boundary: Suggest's hint, if one is
+    /// showing, is taken instead (`hook::accept_suggestion`).
+    pub fn tab(&mut self) -> Option<RtAction> {
+        if let Some(s) = self.suggestion.take().filter(|s| s.at.elapsed() < SUGGEST_TAB_WINDOW) {
+            let action = edit(
+                s.original.chars().count() + 1,
+                &s.corrected,
+                s.boundary,
+                layout_code(&s.corrected),
+                RT_NOTE_FIXED,
+                1,
+            );
+            // Shift+Backspace now flips the fix back.
+            self.recent.clear();
+            self.recent.push(&s.corrected, s.boundary, false);
+            return Some(action);
+        }
+        if self.live_hint.take().is_some_and(|at| at.elapsed() < SUGGEST_TAB_WINDOW) && !self.buf.current().is_empty() {
+            return Some(self.flip());
+        }
+        None
+    }
+
+    /// Suggest, mid-word: the reading Auto would show, as a hint
+    /// (`hook::show_live_hint`).
+    fn live_hint(&mut self) -> Option<RtAction> {
+        let run = self.buf.current();
+        if run.is_empty()
+            || self.seed.guarding()
+            || snippets::starts_a_trigger(&self.snippets, run, InputLayout::UsQwerty)
+        {
+            return None;
+        }
+        match policy::live_reading(run, false, self.en, self.th) {
+            Reading::Thai(mut thai) => {
+                self.live_hint = Some(Instant::now());
+                let hint = owned_string(&thai);
+                thai.zeroize();
+                Some(RtAction { hint, swallow: false, ..RtAction::empty() })
+            }
+            Reading::AsTyped => None,
+        }
+    }
+
     /// Shift+Backspace: put back the keys of a run shown as Thai; or flip the
     /// word in progress; or — right after a boundary — the word before it, then
     /// one more word on each further press.
     pub fn flip(&mut self) -> RtAction {
+        self.suggestion = None;
+        self.live_hint = None;
         if let Some(owned) = self.owned.take() {
             // The typist rejects the reading mid-word: keys back, and the rest
             // of this word is theirs.
@@ -308,12 +556,8 @@ impl Engine {
         }
         if let Some(learned) = step.learn.as_deref().filter(|_| self.learns) {
             // Flipping back a word RightType converted itself says the
-            // original was a real word. Remembered until the app quits.
-            if learned.chars().any(|c| c.is_ascii_alphabetic()) {
-                self.en.learn(learned);
-            } else {
-                self.th.learn(learned);
-            }
+            // original was a real word.
+            learn::learn_now(learned);
         }
         let n = if step.reverts {
             RT_NOTE_REVERTED
@@ -343,6 +587,14 @@ impl Engine {
         }
         let mut reading = policy::live_reading(&run, holding, self.en, self.th);
         if matches!(reading, Reading::Thai(_)) && self.seed.guarding() {
+            reading = Reading::AsTyped;
+        }
+        // A snippet's trigger being typed stays as typed, to be found at its
+        // boundary (`;today` spells Thai keys).
+        if matches!(reading, Reading::Thai(_))
+            && !holding
+            && snippets::starts_a_trigger(&self.snippets, &run, InputLayout::UsQwerty)
+        {
             reading = Reading::AsTyped;
         }
         // What the app shows: what we rendered, or — before we own the run —
@@ -400,16 +652,162 @@ impl Engine {
 fn edit(backspaces: usize, insert: &str, boundary: char, layout: i32, note: i32, words: usize) -> RtAction {
     RtAction {
         backspaces: backspaces as u32,
-        insert: if insert.is_empty() {
-            ptr::null_mut()
-        } else {
-            CString::new(insert).map_or(ptr::null_mut(), CString::into_raw)
-        },
+        insert: owned_string(insert),
         boundary: boundary as u32,
         layout,
         note,
         words: words as u32,
-        swallow: true,
+        ..RtAction::empty()
+    }
+}
+
+/// A fix Code mode decided on, as a detection.
+fn found(corrected: String) -> Detection {
+    Detection { corrected, confidence: Confidence::High, evidence: Evidence::ExactDictionary }
+}
+
+/// `text` for the C side, or NULL when it is empty.
+fn owned_string(text: &str) -> *mut c_char {
+    if text.is_empty() {
+        ptr::null_mut()
+    } else {
+        CString::new(text).map_or(ptr::null_mut(), CString::into_raw)
+    }
+}
+
+/// A snippet's trigger `shown` on screen, ended by `boundary`, becomes its
+/// `text` (`hook::expand_snippet`). A macro takes the trigger away and leaves
+/// its steps for the app to run; the boundary is not typed after it.
+fn expand(shown: &str, boundary: char, text: &str) -> RtAction {
+    let backspaces = shown.chars().count();
+    if let Some(steps) = macro_steps(text) {
+        let mut encoded = steps.join("\n");
+        let action = RtAction {
+            backspaces: backspaces as u32,
+            steps: owned_string(&encoded),
+            note: RT_NOTE_SNIPPET,
+            ..RtAction::empty()
+        };
+        encoded.zeroize();
+        return action;
+    }
+    let mut filled = snippets::fill(text, &now());
+    let action = edit(backspaces, &filled, boundary, RT_LAYOUT_NONE, RT_NOTE_SNIPPET, 1);
+    filled.zeroize();
+    action
+}
+
+/// Key names as a Mac keyboard prints them, as the core's (Windows) names:
+/// Command is where Windows has its Windows key, Option its Alt.
+fn mac_key_names(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open..];
+        let Some(close) = after.find('}') else {
+            break;
+        };
+        let body = &after[1..close];
+        let (name, arg) = body.split_once(' ').unwrap_or((body, ""));
+        if ["keys", "key", "press", "กด"].iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            let keys: Vec<&str> = arg
+                .split('+')
+                .map(|k| match k.trim().to_lowercase().as_str() {
+                    "cmd" | "command" | "⌘" => "Win",
+                    "option" | "opt" | "⌥" => "Alt",
+                    "⌃" => "Ctrl",
+                    "⇧" => "Shift",
+                    "return" | "↩" => "Enter",
+                    _ => k.trim(),
+                })
+                .collect();
+            out.push('{');
+            out.push_str(name);
+            out.push(' ');
+            out.push_str(&keys.join("+"));
+            out.push('}');
+        } else {
+            out.push_str(&after[..=close]);
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The steps of a macro snippet, encoded for the app (see `RtAction::steps`),
+/// or `None` for a plain snippet (or one that cannot run on a Mac).
+fn macro_steps(text: &str) -> Option<Vec<String>> {
+    use righttype::macros::Step;
+    let Some(Ok(steps)) = righttype::macros::steps(&mac_key_names(text)) else {
+        return None;
+    };
+    let now = now();
+    steps
+        .into_iter()
+        .map(|step| match step {
+            Step::Text(t) => Some(format!("T{}", snippets::fill(&t, &now))),
+            Step::Keys(k) => righttype::shortcuts::virtual_keys(&k)
+                .map(|vks| format!("K{}", vks.iter().map(u16::to_string).collect::<Vec<_>>().join(","))),
+            Step::Wait(ms) => Some(format!("W{ms}")),
+            Step::Clipboard => Some("C".to_string()),
+            // Windows' own commands and Word styles: nothing to run here.
+            Step::Command(_) | Step::Style(_) => None,
+        })
+        .collect()
+}
+
+/// Why a snippet cannot be kept (`RT_SNIP_*`), or 0.
+fn snippet_problem(trigger: &str, text: &str, scope: Scope) -> i32 {
+    use righttype::snippets::Problem;
+    let mac = mac_key_names(text);
+    match snippets::check(trigger, &mac, scope) {
+        Ok(_) if righttype::macros::steps(&mac).is_some() && macro_steps(text).is_none() => RT_SNIP_MAC_UNSUPPORTED,
+        Ok(_) => 0,
+        Err(Problem::TriggerLength) => 1,
+        Err(Problem::TriggerSpace) => 2,
+        Err(Problem::TextEmpty) => 3,
+        Err(Problem::TextLong) => 4,
+        Err(Problem::MacroStep) => 5,
+    }
+}
+
+/// A macro step Windows has and a Mac does not (`{คำสั่ง …}`, `{สไตล์ …}`).
+pub const RT_SNIP_MAC_UNSUPPORTED: i32 = 6;
+
+/// The local date and time, for a snippet's date and time fields.
+fn now() -> snippets::Now {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        let t = libc::time(ptr::null_mut());
+        libc::localtime_r(&t, &mut tm);
+    }
+    snippets::Now {
+        year: (tm.tm_year + 1900) as u32,
+        month: (tm.tm_mon + 1) as u32,
+        day: tm.tm_mday as u32,
+        weekday: tm.tm_wday as u32,
+        hour: tm.tm_hour as u32,
+        minute: tm.tm_min as u32,
+    }
+}
+
+fn scope(code: i32) -> Scope {
+    match code {
+        0 => Scope::Thai,
+        1 => Scope::English,
+        3 => Scope::Typo,
+        _ => Scope::Either,
+    }
+}
+
+/// A C string as `&str`, or `None` for NULL or bad UTF-8.
+unsafe fn text<'a>(s: *const c_char) -> Option<&'a str> {
+    if s.is_null() {
+        None
+    } else {
+        CStr::from_ptr(s).to_str().ok()
     }
 }
 
@@ -474,16 +872,16 @@ pub unsafe extern "C" fn rt_engine_free(engine: *mut Engine) {
     }
 }
 
-/// A printable key. True: swallow the key and apply `out` instead.
+/// A printable key. True: apply `out`, and swallow the key if `out.swallow`.
 ///
 /// # Safety
 /// `engine` came from `rt_engine_new`; `out` is writable.
 #[no_mangle]
-pub unsafe extern "C" fn rt_key(engine: *mut Engine, key: u32, layout: i32, live: bool, out: *mut RtAction) -> bool {
+pub unsafe extern "C" fn rt_key(engine: *mut Engine, key: u32, layout: i32, mode: i32, out: *mut RtAction) -> bool {
     let (Some(e), Some(c)) = (engine.as_mut(), char::from_u32(key)) else {
         return false;
     };
-    give(e.key(c, input_layout(layout), live), out)
+    give(e.key(c, input_layout(layout), Mode::from_code(mode)), out)
 }
 
 /// Backspace. True: swallow it and apply `out` instead.
@@ -491,11 +889,11 @@ pub unsafe extern "C" fn rt_key(engine: *mut Engine, key: u32, layout: i32, live
 /// # Safety
 /// `engine` came from `rt_engine_new`; `out` is writable.
 #[no_mangle]
-pub unsafe extern "C" fn rt_backspace(engine: *mut Engine, live: bool, out: *mut RtAction) -> bool {
+pub unsafe extern "C" fn rt_backspace(engine: *mut Engine, mode: i32, out: *mut RtAction) -> bool {
     let Some(e) = engine.as_mut() else {
         return false;
     };
-    give(e.backspace(live), out)
+    give(e.backspace(Mode::from_code(mode)), out)
 }
 
 /// # Safety
@@ -528,13 +926,48 @@ pub unsafe extern "C" fn rt_boundary(
     engine: *mut Engine,
     boundary: u32,
     layout: i32,
-    autofix: bool,
+    mode: i32,
     out: *mut RtAction,
 ) -> bool {
     let (Some(e), Some(b)) = (engine.as_mut(), char::from_u32(boundary)) else {
         return false;
     };
-    give(e.boundary(b, input_layout(layout), autofix), out)
+    give(e.boundary(b, input_layout(layout), Mode::from_code(mode)), out)
+}
+
+/// Code mode, before `rt_boundary`: true when the app should read the text
+/// before the caret on its line and hand it over with `rt_code_line`.
+///
+/// # Safety
+/// `engine` came from `rt_engine_new`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_code_wants_line(engine: *const Engine, layout: i32) -> bool {
+    engine.as_ref().is_some_and(|e| e.code_wants_line(input_layout(layout)))
+}
+
+/// The text before the caret (NULL: it could not be read), for the next
+/// boundary in Code mode.
+///
+/// # Safety
+/// `engine` came from `rt_engine_new`; `before` is NULL or NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rt_code_line(engine: *mut Engine, before: *const c_char) {
+    if let Some(e) = engine.as_mut() {
+        e.code_line(text(before));
+    }
+}
+
+/// Tab, before `rt_boundary`. True: Suggest's hint was taken; swallow the
+/// Tab and apply `out`.
+///
+/// # Safety
+/// `engine` came from `rt_engine_new`; `out` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn rt_tab(engine: *mut Engine, out: *mut RtAction) -> bool {
+    let Some(e) = engine.as_mut() else {
+        return false;
+    };
+    give(e.tab(), out)
 }
 
 /// Shift+Backspace. Always fills `out` (its `note` says what happened).
@@ -555,10 +988,9 @@ pub unsafe extern "C" fn rt_flip(engine: *mut Engine, out: *mut RtAction) {
 #[no_mangle]
 pub unsafe extern "C" fn rt_action_clear(action: *mut RtAction) {
     if let Some(a) = action.as_mut() {
-        if !a.insert.is_null() {
-            let mut bytes = CString::from_raw(a.insert).into_bytes();
-            bytes.zeroize();
-            a.insert = ptr::null_mut();
+        for s in [&mut a.insert, &mut a.hint, &mut a.steps] {
+            rt_string_free(*s);
+            *s = ptr::null_mut();
         }
     }
 }
@@ -604,6 +1036,211 @@ pub unsafe extern "C" fn rt_string_free(s: *mut c_char) {
     }
 }
 
+/// Forget the snippets, before adding the current list with `rt_snippet_add`.
+///
+/// # Safety
+/// `engine` came from `rt_engine_new`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_snippets_clear(engine: *mut Engine) {
+    if let Some(e) = engine.as_mut() {
+        for s in e.snippets.iter_mut() {
+            s.text.zeroize();
+        }
+        e.snippets.clear();
+    }
+}
+
+/// Add a snippet (`scope`: 0 Thai, 1 English, 2 either, 3 a misspelling of
+/// the typist's own). Returns 0, or why it cannot be kept (`rt_snippet_check`).
+///
+/// # Safety
+/// `engine` came from `rt_engine_new`; the strings are NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rt_snippet_add(engine: *mut Engine, trigger: *const c_char, body: *const c_char, scope_code: i32) -> i32 {
+    let (Some(e), Some(trigger), Some(body)) = (engine.as_mut(), text(trigger), text(body)) else {
+        return 3;
+    };
+    let problem = snippet_problem(trigger, body, scope(scope_code));
+    if problem == 0 && e.snippets.len() < snippets::MAX_SNIPPETS {
+        // Kept with the core's key names (`{กด Cmd+B}` as `{กด Win+B}`).
+        if let Ok(s) = snippets::check(trigger, &mac_key_names(body), scope(scope_code)) {
+            e.snippets.push(s);
+        }
+    }
+    problem
+}
+
+/// Whether a snippet can be kept: 0, or 1 trigger not 2–32 characters,
+/// 2 trigger has a space, 3 no text, 4 text too long, 5 a step in braces that
+/// cannot run, 6 a step a Mac does not have.
+///
+/// # Safety
+/// The strings are NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rt_snippet_check(trigger: *const c_char, body: *const c_char, scope_code: i32) -> i32 {
+    match (text(trigger), text(body)) {
+        (Some(trigger), Some(body)) => snippet_problem(trigger, body, scope(scope_code)),
+        _ => 3,
+    }
+}
+
+/// A snippet's text with its date and time fields filled in for now (the
+/// settings page shows it).
+///
+/// # Safety
+/// `body` is NUL-terminated UTF-8. Release the result with `rt_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_snippet_preview(body: *const c_char) -> *mut c_char {
+    text(body).map_or(ptr::null_mut(), |t| owned_string(&snippets::fill(t, &now())))
+}
+
+/// Common Thai misspellings put right when a word ends, and web addresses,
+/// email addresses and numbers typed on the Thai layout put back.
+///
+/// # Safety
+/// `engine` came from `rt_engine_new`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_set_options(engine: *mut Engine, spelling: bool, addresses: bool) {
+    if let Some(e) = engine.as_mut() {
+        e.spelling = spelling;
+    }
+    policy::set_fixes_addresses(addresses);
+}
+
+/// Keep learned words in the file at `path`, and load them. `reversed`:
+/// learn a word flipped back with Shift+Backspace; `typed`: learn an English
+/// word typed three times.
+///
+/// # Safety
+/// `path` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rt_learn_open(path: *const c_char) {
+    if let Some(p) = text(path) {
+        learn::open(p.into());
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rt_learn_set(reversed: bool, typed: bool) {
+    learn::set(reversed, typed);
+}
+
+/// Every learned word, one per line. Release with `rt_string_free`.
+#[no_mangle]
+pub extern "C" fn rt_learn_list() -> *mut c_char {
+    let mut list = learn::list().join("\n");
+    let out = owned_string(&list);
+    list.zeroize();
+    out
+}
+
+#[no_mangle]
+pub extern "C" fn rt_learn_count() -> u32 {
+    learn::count() as u32
+}
+
+/// Make `lines` (one word per line) the whole list. Returns how many lines
+/// were not a word; `kept` gets how many words the list has.
+///
+/// # Safety
+/// `lines` is NUL-terminated UTF-8; `kept` is writable or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn rt_learn_replace(lines: *const c_char, kept: *mut u32) -> u32 {
+    let lines: Vec<&str> = text(lines).map(|t| t.lines().collect()).unwrap_or_default();
+    let (k, skipped) = learn::replace(&lines);
+    if let Some(kept) = kept.as_mut() {
+        *kept = k as u32;
+    }
+    skipped as u32
+}
+
+/// Learn `word` now. Returns it as learned, or NULL when it is not one word.
+///
+/// # Safety
+/// `word` is NUL-terminated UTF-8. Release the result with `rt_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_learn_add(word: *const c_char) -> *mut c_char {
+    text(word).and_then(learn::add).map_or(ptr::null_mut(), |w| owned_string(&w))
+}
+
+/// The word `rt_learn_add` would learn from a selection, or NULL.
+///
+/// # Safety
+/// `selection` is NUL-terminated UTF-8. Release the result with `rt_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn rt_learn_candidate(selection: *const c_char) -> *mut c_char {
+    text(selection).and_then(learn::candidate).map_or(ptr::null_mut(), |w| owned_string(&w))
+}
+
+#[no_mangle]
+pub extern "C" fn rt_learn_clear() {
+    learn::clear();
+}
+
+/// Words flipped back lately while learning them is off, newest first, one
+/// per line, or NULL. Release with `rt_string_free`.
+#[no_mangle]
+pub extern "C" fn rt_learn_reversed() -> *mut c_char {
+    owned_string(&learn::reversed().join("\n"))
+}
+
+/// Keep one of `rt_learn_reversed` as typed from now on.
+///
+/// # Safety
+/// `word` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rt_learn_keep(word: *const c_char) {
+    if let Some(w) = text(word) {
+        learn::keep_as_typed(w);
+    }
+}
+
+/// What the palette can do to a selection (`palette::TransformKind`).
+pub const RT_TRANSFORM_REPAIR: i32 = 0;
+pub const RT_TRANSFORM_NORMALIZE: i32 = 1;
+pub const RT_TRANSFORM_SPACING: i32 = 2;
+pub const RT_TRANSFORM_ERA: i32 = 3;
+pub const RT_TRANSFORM_NUMBER_WORDS: i32 = 4;
+pub const RT_TRANSFORM_BAHT_WORDS: i32 = 5;
+pub const RT_TRANSFORM_DIGITS: i32 = 6;
+pub const RT_TRANSFORM_UPPER: i32 = 7;
+pub const RT_TRANSFORM_LOWER: i32 = 8;
+pub const RT_TRANSFORM_TITLE: i32 = 9;
+pub const RT_TRANSFORM_SWAP_CASE: i32 = 10;
+/// Every character to the other layout.
+pub const RT_TRANSFORM_FLIP: i32 = 11;
+
+/// `text` changed as `kind` says. Release the result with `rt_string_free`.
+///
+/// # Safety
+/// `input` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn rt_transform(kind: i32, input: *const c_char) -> *mut c_char {
+    use righttype::layout as l;
+    use righttype::thai_text as t;
+    let Some(input) = text(input) else {
+        return ptr::null_mut();
+    };
+    let mut out = match kind {
+        RT_TRANSFORM_REPAIR => righttype::repair::repair(input, dict::english(), dict::thai()).text,
+        RT_TRANSFORM_NORMALIZE => t::normalize(input),
+        RT_TRANSFORM_SPACING => t::tidy_spacing(input),
+        RT_TRANSFORM_ERA => t::swap_era(input),
+        RT_TRANSFORM_NUMBER_WORDS => t::number_words(input),
+        RT_TRANSFORM_BAHT_WORDS => t::baht_words(input),
+        RT_TRANSFORM_DIGITS => l::swap_digits(input),
+        RT_TRANSFORM_UPPER => l::upper_case(input),
+        RT_TRANSFORM_LOWER => l::lower_case(input),
+        RT_TRANSFORM_TITLE => l::title_case(input),
+        RT_TRANSFORM_SWAP_CASE => l::swap_case(input),
+        RT_TRANSFORM_FLIP => auto_convert(input),
+        _ => input.to_string(),
+    };
+    let result = CString::new(out.as_str()).map_or(ptr::null_mut(), CString::into_raw);
+    out.zeroize();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,18 +1258,27 @@ mod tests {
         e: Engine,
         screen: String,
         layout: InputLayout,
-        autofix: bool,
-        live: bool,
+        mode: Mode,
+        /// The last Suggest hint shown.
+        hint: String,
+        /// The last macro's steps.
+        steps: String,
     }
 
     impl Box {
-        fn new(layout: InputLayout, autofix: bool, live: bool) -> Self {
+        fn new(layout: InputLayout, mode: Mode) -> Self {
             let mut e = Engine::new();
             e.learns = false;
-            Box { e, screen: String::new(), layout, autofix, live }
+            Box { e, screen: String::new(), layout, mode, hint: String::new(), steps: String::new() }
         }
 
         fn apply(&mut self, a: RtAction) {
+            if !a.hint.is_null() {
+                self.hint = unsafe { CStr::from_ptr(a.hint).to_str().unwrap().to_string() };
+            }
+            if !a.steps.is_null() {
+                self.steps = unsafe { CStr::from_ptr(a.steps).to_str().unwrap().to_string() };
+            }
             for _ in 0..a.backspaces {
                 self.screen.pop();
             }
@@ -652,14 +1298,18 @@ mod tests {
                 InputLayout::UsQwerty => k,
                 InputLayout::ThaiKedmanee => en_to_th(&k.to_string()).chars().next().unwrap(),
             };
-            match self.e.key(k, self.layout, self.live) {
-                Some(a) => self.apply(a),
+            match self.e.key(k, self.layout, self.mode) {
+                Some(a) if a.swallow => self.apply(a),
+                Some(a) => {
+                    self.apply(a);
+                    self.screen.push(produced);
+                }
                 None => self.screen.push(produced),
             }
         }
 
         fn backspace(&mut self) {
-            match self.e.backspace(self.live) {
+            match self.e.backspace(self.mode) {
                 Some(a) => self.apply(a),
                 None => {
                     self.screen.pop();
@@ -668,7 +1318,13 @@ mod tests {
         }
 
         fn boundary(&mut self, b: char) {
-            match self.e.boundary(b, self.layout, self.autofix) {
+            if b == '\t' {
+                if let Some(a) = self.e.tab() {
+                    self.apply(a);
+                    return;
+                }
+            }
+            match self.e.boundary(b, self.layout, self.mode) {
                 Some(a) => {
                     let swallow = a.swallow;
                     self.apply(a);
@@ -691,7 +1347,7 @@ mod tests {
                 match c {
                     '<' => self.backspace(),
                     '^' => self.flip(),
-                    ' ' | '\n' => self.boundary(c),
+                    ' ' | '\n' | '\t' => self.boundary(c),
                     _ => self.key(c),
                 }
             }
@@ -700,13 +1356,16 @@ mod tests {
     }
 
     fn manual(layout: InputLayout) -> Box {
-        Box::new(layout, false, false)
+        Box::new(layout, Mode::Manual)
     }
     fn semi(layout: InputLayout) -> Box {
-        Box::new(layout, true, false)
+        Box::new(layout, Mode::SemiAuto)
     }
     fn auto(layout: InputLayout) -> Box {
-        Box::new(layout, true, true)
+        Box::new(layout, Mode::Auto)
+    }
+    fn suggest(layout: InputLayout) -> Box {
+        Box::new(layout, Mode::Suggest)
     }
 
     use InputLayout::{ThaiKedmanee as Thai, UsQwerty as Us};
@@ -805,6 +1464,172 @@ mod tests {
         b.keys("a3b");
         let a = b.e.flip();
         assert_eq!(insert(&a), "a3b");
+    }
+
+    fn code(layout: InputLayout) -> Box {
+        Box::new(layout, Mode::Code)
+    }
+
+    /// A word typed in Code mode, with the line before it as the editor shows it.
+    fn code_word(b: &mut Box, keys: &str, line: Option<&str>) -> String {
+        for k in keys.chars() {
+            b.key(k);
+        }
+        if b.e.code_wants_line(b.layout) {
+            b.e.code_line(line);
+        }
+        b.boundary(' ');
+        b.screen.clone()
+    }
+
+    #[test]
+    fn code_mode_never_touches_names_and_keywords() {
+        // On the English keyboard: identifiers and keywords stay, even where
+        // their keys read as Thai.
+        let mut b = code(Us);
+        for w in ["l;ylfu", "getUserName", "MAX_SIZE", "fmt.Println", "x2"] {
+            b.screen.clear();
+            assert_eq!(code_word(&mut b, w, Some("let x = ")), format!("{w} "), "{w}");
+        }
+    }
+
+    #[test]
+    fn code_mode_writes_thai_in_comments_and_strings() {
+        let mut b = code(Us);
+        assert_eq!(code_word(&mut b, "l;ylfu", Some("    // ")), "สวัสดี ");
+        let mut b = code(Us);
+        assert_eq!(code_word(&mut b, "l;ylfu", Some("print(\"")), "สวัสดี ");
+    }
+
+    #[test]
+    fn code_mode_offers_thai_when_the_line_cannot_be_read() {
+        let mut b = code(Us);
+        assert_eq!(code_word(&mut b, "l;ylfu", None), "l;ylfu ");
+        assert_eq!(b.hint, "สวัสดี");
+        assert_eq!(b.keys("\t"), "สวัสดี ");
+    }
+
+    #[test]
+    fn code_mode_puts_thai_keys_back_as_code() {
+        // `asdf` typed on the Thai keyboard, in code: English, though no word.
+        let mut b = code(Thai);
+        assert_eq!(code_word(&mut b, "asdf", Some("let ")), "asdf ");
+        assert_eq!(b.layout, Us);
+        // In a comment, Thai is at home.
+        let mut b = code(Thai);
+        assert_eq!(code_word(&mut b, "asdf", Some("// ")), "ฟหกด ");
+    }
+
+    #[test]
+    fn code_mode_does_not_rewrite_while_typing() {
+        let mut b = code(Us);
+        assert_eq!(b.keys("l;ylfu8iy["), "l;ylfu8iy[");
+    }
+
+    #[test]
+    fn suggest_shows_the_fix_and_tab_takes_it() {
+        let mut b = suggest(Us);
+        assert_eq!(b.keys("l;ylfu "), "l;ylfu ");
+        assert_eq!(b.hint, "สวัสดี");
+        assert_eq!(b.keys("\t"), "สวัสดี ");
+        assert_eq!(b.layout, Thai);
+        // Shift+Backspace flips the fix back.
+        assert_eq!(b.keys("^"), "l;ylfu ");
+    }
+
+    #[test]
+    fn suggest_hint_goes_with_the_next_key() {
+        let mut b = suggest(Us);
+        b.keys("l;ylfu a");
+        // Tab after another key is a Tab.
+        assert_eq!(b.keys("\t"), "l;ylfu a\t");
+    }
+
+    #[test]
+    fn suggest_hints_thai_mid_word_and_tab_flips_it() {
+        let mut b = suggest(Us);
+        assert_eq!(b.keys("l;ylfu8iy["), "l;ylfu8iy[");
+        assert_eq!(b.hint, "สวัสดีครับ");
+        assert_eq!(b.keys("\t"), "สวัสดีครับ");
+    }
+
+    #[test]
+    fn suggest_leaves_english_alone() {
+        let mut b = suggest(Us);
+        assert_eq!(b.keys("hello world \t"), "hello world \t");
+        assert!(b.hint.is_empty());
+    }
+
+    fn add(b: &mut Box, trigger: &str, text: &str, scope: i32) -> i32 {
+        let t = CString::new(trigger).unwrap();
+        let x = CString::new(text).unwrap();
+        unsafe { rt_snippet_add(&mut b.e, t.as_ptr(), x.as_ptr(), scope) }
+    }
+
+    #[test]
+    fn a_snippet_trigger_becomes_its_text_on_either_keyboard() {
+        let mut b = auto(Us);
+        assert_eq!(add(&mut b, ";addr", "123 Main St", 2), 0);
+        assert_eq!(b.keys("my ;addr "), "my 123 Main St ");
+        let mut b = manual(Thai);
+        add(&mut b, ";addr", "123 Main St", 2);
+        assert_eq!(b.keys(";addr "), "123 Main St ");
+    }
+
+    #[test]
+    fn a_trigger_is_not_shown_as_thai_while_typed() {
+        // `;today` spells Thai keys; Auto would otherwise rewrite it mid-word.
+        let mut b = auto(Us);
+        add(&mut b, "l;ylfu", "hello", 1);
+        assert_eq!(b.keys("l;ylfu"), "l;ylfu");
+        assert_eq!(b.keys(" "), "hello ");
+    }
+
+    #[test]
+    fn a_snippet_fills_its_date_fields() {
+        let mut b = manual(Us);
+        add(&mut b, ";y", "{iso}", 2);
+        let typed = b.keys(";y ").to_string();
+        assert_eq!(typed.len(), "2026-10-29 ".len());
+        assert!(typed.starts_with("20"));
+    }
+
+    #[test]
+    fn a_macro_snippet_leaves_its_steps_to_the_app() {
+        let mut b = manual(Us);
+        assert_eq!(add(&mut b, ";sig", "{กด Cmd+B}Bold{กด Cmd+B}{รอ 100}\nline", 2), 0);
+        assert_eq!(b.keys("x ;sig "), "x ");
+        assert_eq!(b.steps, "K91,66\nTBold\nK91,66\nW100\nK13\nTline");
+        // Steps Windows has and a Mac does not are refused.
+        assert_eq!(add(&mut b, ";h", "{สไตล์ Heading 1}x", 2), RT_SNIP_MAC_UNSUPPORTED);
+        assert_eq!(add(&mut b, ";k", "{กด Ctrl+Nope}", 2), 5);
+        assert_eq!(add(&mut b, "x", "text", 2), 1);
+    }
+
+    #[test]
+    fn a_typo_of_your_own_is_put_right_when_the_word_ends() {
+        let mut b = semi(Us);
+        add(&mut b, "teh", "the", 3);
+        assert_eq!(b.keys("teh cat "), "the cat ");
+        let mut b = manual(Us);
+        add(&mut b, "teh", "the", 3);
+        assert_eq!(b.keys("teh "), "teh ");
+    }
+
+    #[test]
+    fn transforms_change_a_selection() {
+        let t = |kind, s: &str| {
+            let c = CString::new(s).unwrap();
+            let out = unsafe { rt_transform(kind, c.as_ptr()) };
+            let r = unsafe { CStr::from_ptr(out).to_str().unwrap().to_string() };
+            unsafe { rt_string_free(out) };
+            r
+        };
+        assert_eq!(t(RT_TRANSFORM_REPAIR, "l;ylfu hello"), "สวัสดี hello");
+        assert_eq!(t(RT_TRANSFORM_UPPER, "abc"), "ABC");
+        assert_eq!(t(RT_TRANSFORM_DIGITS, "123"), "๑๒๓");
+        assert_eq!(t(RT_TRANSFORM_ERA, "2026"), "2569");
+        assert_eq!(t(RT_TRANSFORM_FLIP, "hello"), "้ำสสน");
     }
 
     #[test]

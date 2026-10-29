@@ -23,14 +23,13 @@ enum SelfTest {
         DispatchQueue.global().async {
             Thread.sleep(forTimeInterval: 1)
             var failed = 0
-            let saved = onMain { Tap.shared.mode }
             // The app that was in front before (a terminal, say) may be one
             // RightType stays out of; the test types into its own window.
             onMain { Tap.shared.excluded = [] }
             func check(_ name: String, _ mode: Mode, _ layout: Int32, _ steps: () -> Void, _ expect: String) {
                 onMain {
                     text.string = ""
-                    Tap.shared.mode = mode
+                    Tap.shared.testMode = mode
                     Tap.shared.reset(all: true)
                     InputSources.select(layout)
                 }
@@ -88,9 +87,32 @@ enum SelfTest {
             check("auto fixes English typed on Thai at space", .auto, RT_LAYOUT_THAI, {
                 keys("hello world ")
             }, "hello world ")
+            check("suggest leaves the word, Tab takes the fix", .suggest, RT_LAYOUT_ENGLISH, {
+                keys("l;ylfu "); Thread.sleep(forTimeInterval: 0.2); keys("\t")
+            }, "สวัสดี ")
+            check("suggest: Tab mid-word flips the word", .suggest, RT_LAYOUT_ENGLISH, {
+                keys("l;ylfu8iy["); Thread.sleep(forTimeInterval: 0.2); keys("\t")
+            }, "สวัสดีครับ")
+            check("suggest leaves text alone without Tab", .suggest, RT_LAYOUT_ENGLISH, {
+                keys("l;ylfu ")
+            }, "l;ylfu ")
+            onMain {
+                Tap.shared.setSnippets([Snippet(trigger: ";addr", text: "123 Main St\nBangkok", scope: 2),
+                                        Snippet(trigger: "teh", text: "the", scope: 3)])
+            }
+            check("a snippet becomes its text", .manual, RT_LAYOUT_ENGLISH, {
+                keys("at ;addr ")
+            }, "at 123 Main St\nBangkok ")
+            check("a snippet works on the Thai keyboard too", .auto, RT_LAYOUT_THAI, {
+                keys(";addr ")
+            }, "123 Main St\nBangkok ")
+            check("a typo of your own is put right", .semiAuto, RT_LAYOUT_ENGLISH, {
+                keys("teh cat ")
+            }, "the cat ")
+            onMain { Tap.shared.setSnippets(Prefs.shared.snippets) }
 
             onMain {
-                Tap.shared.mode = saved
+                Tap.shared.testMode = nil
                 print(failed == 0 ? "ALL PASSED" : "\(failed) FAILED")
                 NSApp.terminate(nil)
             }
@@ -103,7 +125,7 @@ enum SelfTest {
             if ch == "<" { press(Keys.delete, []); continue }
             let shifted = ch.isUppercase || "~!@#$%^&*()_+{}|:\"<>?".contains(ch)
             guard let code = Keys.all.first(where: { $0.qwerty == ch.unicodeScalars.first!.value })?.code
-                ?? [" ": Keys.space, "\n": Keys.returnKey][ch] else { continue }
+                ?? [" ": Keys.space, "\n": Keys.returnKey, "\t": Keys.tab][ch] else { continue }
             press(code, shifted ? .maskShift : [])
         }
     }
