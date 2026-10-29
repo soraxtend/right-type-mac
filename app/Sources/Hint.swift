@@ -56,38 +56,27 @@ final class Hint {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
+    var isVisible: Bool { panel.isVisible }
+
     func hide() {
         guard panel.isVisible else { return }
         hideWork?.cancel()
         panel.orderOut(nil)
     }
 
-    /// Up to `limit` characters before the text cursor of the focused app,
-    /// or nil when the app does not say (many editors do not).
-    static func textBeforeCaret(limit: Int = 160) -> String? {
-        guard let el = focusedElement() else { return nil }
-        AXUIElementSetMessagingTimeout(el, 0.08)
-        var range: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &range) == .success,
-              let range, CFGetTypeID(range) == AXValueGetTypeID() else { return nil }
-        var selected = CFRange()
-        guard AXValueGetValue(range as! AXValue, .cfRange, &selected) else { return nil }
-        let start = max(0, selected.location - limit)
-        var before = CFRange(location: start, length: selected.location - start)
-        guard let wanted = AXValueCreate(.cfRange, &before) else { return nil }
-        var text: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString,
-                                                         wanted, &text) == .success else { return nil }
-        return text as? String
-    }
-
+    /// The focused element, with a short timeout: these calls run on the
+    /// thread that delivers keystrokes, and a slow app (VS Code, say) must not
+    /// hold it up: macOS would switch the keyboard tap off, and keys would
+    /// come out of order.
     private static func focusedElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.08)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID() else { return nil }
-        return (element as! AXUIElement)
+        let el = element as! AXUIElement
+        AXUIElementSetMessagingTimeout(el, 0.08)
+        return el
     }
 
     /// Where the text cursor of the focused app is, in screen coordinates

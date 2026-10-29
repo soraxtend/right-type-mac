@@ -21,7 +21,6 @@
 #define RT_MODE_SEMI_AUTO 2
 #define RT_MODE_AUTO 3
 #define RT_MODE_SUGGEST 4
-#define RT_MODE_CODE 5
 
 #define RT_SNIP_MAC_UNSUPPORTED 6
 
@@ -60,8 +59,6 @@ void rt_reset(RtEngine *engine, bool also_recent);
 bool rt_layout_changed(RtEngine *engine, RtAction *out);
 bool rt_boundary(RtEngine *engine, uint32_t boundary, int32_t layout, int32_t mode, RtAction *out);
 bool rt_tab(RtEngine *engine, RtAction *out);
-bool rt_code_wants_line(const RtEngine *engine, int32_t layout);
-void rt_code_line(RtEngine *engine, const char *before);
 void rt_flip(RtEngine *engine, RtAction *out);
 void rt_action_clear(RtAction *action);
 char *rt_repair(const char *text);

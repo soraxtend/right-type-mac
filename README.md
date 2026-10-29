@@ -31,9 +31,9 @@
 - **คำย่อ** (snippets): `;addr` + วรรค → ข้อความเต็ม ใช้ได้บนแป้นไทย แป้นอังกฤษ หรือทั้งสอง
   มีช่องวันที่/เวลา (`{วันที่}`, `{iso}` ฯลฯ) และ macro (`{กด Cmd+B}`, `{รอ 300}`, `{คลิปบอร์ด}`)
   และ "คำผิดของฉัน" ที่แก้คำที่พิมพ์ผิดประจำให้เมื่อจบคำ
-- **โหมดแต่ละแอป** (เมนู Aก → ในแอปนี้ หรือ ตั้งค่า → แอปที่ไม่ใช้): ตั้งโหมดเฉพาะแอปได้ และโปรแกรมเขียนโค้ด
-  (VS Code, Cursor, Xcode, JetBrains, Zed, Sublime ฯลฯ) ใช้ **โหมดโค้ด** เป็นค่าเริ่มต้น: ไม่แตะชื่อตัวแปรหรือคำสงวน
-  แก้เป็นภาษาไทยเฉพาะในคอมเมนต์และสตริง ถ้าอ่านบรรทัดไม่ได้จะแสดงเป็นคำแนะนำให้กด Tab แทน
+- **โหมดแต่ละแอป** (เมนู Aก → ในแอปนี้ หรือ ตั้งค่า → แอปที่ไม่ใช้): ตั้งโหมดเฉพาะแอปได้ หรือปิดในแอปนั้น
+  โปรแกรมเขียนโค้ด (VS Code, Cursor, Xcode, JetBrains, Zed, Sublime ฯลฯ) เริ่มที่ **โหมดกดแก้เอง**
+  ชื่อตัวแปรและคำสงวนจึงไม่ถูกแก้ระหว่างพิมพ์ กด `⇧⌫` เมื่ออยากแก้คำที่พิมพ์ผิดภาษา
 - ตัวเลือกจากตัว Windows: แก้คำไทยที่สะกดผิดบ่อย, แก้เว็บ อีเมล ตัวเลขที่พิมพ์บนแป้นไทย, หยุดชั่วคราว
 
 ## ติดตั้ง
@@ -41,7 +41,8 @@
 คู่มือติดตั้งทีละขั้นสำหรับคนทั่วไป (รวมวิธีแก้ปัญหาและถอนการติดตั้ง) อยู่ที่ [INSTALL.md](INSTALL.md)
 ส่วนนี้สำหรับคนที่ build เอง
 
-ต้องมี Xcode Command Line Tools กับ Rust (`brew install rust`)
+ต้องมี Xcode Command Line Tools กับ rustup (`brew install rustup` แล้ว `$(brew --prefix rustup)/bin/rustup default stable`)
+ใช้ rustup ไม่ใช้ `brew install rust` เพราะไลบรารีของ Rust จาก Homebrew build มาสำหรับ macOS รุ่นล่าสุด แอปจะเปิดบน macOS รุ่นเก่าไม่ได้ (`build.sh` จะไม่ยอม build ให้)
 
 ```bash
 ./build.sh install
@@ -59,7 +60,13 @@ System Settings → Privacy & Security → **Accessibility**
 open -W --stdout /dev/stdout -a /Applications/RightType.app --args --selftest
 ```
 
-เทสต์ของแกน: `cargo test --manifest-path core/Cargo.toml`
+ทดสอบโหมดแต่ละแอปใน VS Code จริง (เปิด VS Code อีกตัวด้วย profile ชั่วคราว ไม่แตะของเดิม แล้วปิดเอง):
+
+```bash
+open -W --stdout /dev/stdout -a /Applications/RightType.app --args --selftest-editors
+```
+
+เทสต์ของแกน: `./build.sh test`
 
 ## คีย์บอร์ดที่รองรับ
 

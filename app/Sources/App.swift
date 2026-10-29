@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let prefs = Prefs.shared
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        NSApp.mainMenu = Self.editMenu()
         let tap = Tap.shared
         tap.onNote = { [weak self] in self?.toast.show($0) }
         prefs.start()
@@ -22,9 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         updateIcon()
 
-        if CommandLine.arguments.contains("--selftest") {
+        if CommandLine.arguments.contains("--selftest") || CommandLine.arguments.contains("--selftest-editors") {
             if tap.start() {
-                SelfTest.run()
+                if CommandLine.arguments.contains("--selftest-editors") { EditorTest.run() } else { SelfTest.run() }
             } else {
                 print("SELFTEST: no event tap (accessibility \(AXIsProcessTrusted()), "
                       + "listen \(CGPreflightListenEventAccess()), post \(CGPreflightPostEventAccess()))")
@@ -56,6 +57,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+    }
+
+    /// A menu-bar app has no menus of its own, and without an Edit menu
+    /// ⌘C, ⌘V, ⌘A and ⌘Z do nothing in its windows (the settings' text boxes).
+    private static func editMenu() -> NSMenu {
+        let main = NSMenu()
+        let app = NSMenuItem()
+        app.submenu = NSMenu()
+        app.submenu?.addItem(withTitle: "ปิดหน้าต่าง", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        main.addItem(app)
+        let edit = NSMenuItem()
+        let menu = NSMenu(title: "แก้ไข")
+        menu.addItem(withTitle: "เลิกทำ", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = menu.addItem(withTitle: "ทำซ้ำ", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "ตัด", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        menu.addItem(withTitle: "คัดลอก", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        menu.addItem(withTitle: "วาง", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        menu.addItem(withTitle: "เลือกทั้งหมด", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        edit.submenu = menu
+        main.addItem(edit)
+        return main
     }
 
     private func updateIcon() {
@@ -152,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let own = prefs.appMode(app)
             for (title, mode) in [("ใช้โหมดปกติ", nil as Mode?), ("โหมดอัตโนมัติ", .auto), ("โหมดแนะนำ", .suggest),
                                   ("โหมดกดแก้เอง", .manual), ("โหมดแก้เมื่อจบคำ", .semiAuto),
-                                  ("โค้ด (สำหรับเขียนโปรแกรม)", .code), ("ปิดในแอปนี้", .off)] {
+                                  ("ปิดในแอปนี้", .off)] {
                 let m = action(title, #selector(setAppMode(_:)))
                 m.representedObject = [app, mode?.rawValue ?? -1] as [Any]
                 m.state = own == mode ? .on : .off
@@ -275,8 +299,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ⌃⌥Space เปิด command palette: เปลี่ยนข้อความที่เลือก (ตัวพิมพ์ใหญ่ ปี พ.ศ. จำนวนเงิน ฯลฯ) \
         เปลี่ยนโหมด หยุดชั่วคราว ตั้งโหมดของแอปนี้
 
-        โหมดโค้ด (ค่าเริ่มต้นในโปรแกรมเขียนโค้ด) ไม่แตะชื่อตัวแปรหรือคำสงวน \
-        แก้เป็นภาษาไทยเฉพาะในคอมเมนต์และสตริง ตั้งโหมดแยกแต่ละแอปได้ที่เมนู Aก → ในแอปนี้
+        ตั้งโหมดแยกแต่ละแอปได้ที่เมนู Aก → ในแอปนี้ \
+        โปรแกรมเขียนโค้ดเริ่มที่โหมดกดแก้เอง ชื่อตัวแปรและคำสงวนจึงไม่ถูกแก้ระหว่างพิมพ์
 
         อัตโนมัติ แก้ตั้งแต่ระหว่างพิมพ์ ไม่ต้องรอวรรค (ภาษาไทยที่พิมพ์ติดกันก็แก้ได้) \
         ถ้าแก้ผิด กด ⇧⌫ เพื่อย้อน
