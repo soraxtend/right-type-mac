@@ -12,6 +12,8 @@ crate-type = ["staticlib", "rlib"]
 # The OS-free core of RightType (Windows), pinned to the commit this port was built against.
 righttype = { git = "https://github.com/k-affan-th/RightType", rev = "ea4bce495e60a12a95d014f55b3e542890261e49" }
 zeroize = "1"
+# localtime_r, for the date and time a snippet fills in.
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

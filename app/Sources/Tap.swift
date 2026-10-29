@@ -2,7 +2,7 @@ import AppKit
 import Carbon
 import CoreGraphics
 
-/// What RightType does while you type.
+/// What RightType does while you type (`RT_MODE_*`).
 enum Mode: Int {
     case off = 0
     /// Fixes only when asked (Shift+Backspace).
@@ -12,11 +12,34 @@ enum Mode: Int {
     /// Also fixes Thai typed on the English layout while it is typed, as the
     /// Windows version does: Thai has no spaces to wait for.
     case auto = 3
+    /// Shows the fix by the caret; Tab takes it. Never changes text by itself.
+    case suggest = 4
+    /// For code editors: names and keywords stay, Thai only in comments and
+    /// strings, Thai keys typed for code come back as English.
+    case code = 5
 
-    /// Fixes a word when it ends.
-    var autofix: Bool { self == .semiAuto || self == .auto }
-    /// Fixes while typing.
-    var live: Bool { self == .auto }
+    var name: String {
+        switch self {
+        case .off: return "ปิด"
+        case .manual: return "กดแก้เอง"
+        case .semiAuto: return "แก้เมื่อจบคำ"
+        case .auto: return "อัตโนมัติ"
+        case .suggest: return "แนะนำ"
+        case .code: return "โค้ด"
+        }
+    }
+
+    /// What the mode does, in one line (the settings page and the menu).
+    var detail: String {
+        switch self {
+        case .off: return "RightType ไม่ทำอะไร"
+        case .manual: return "ไม่แก้ข้อความเอง กด ⇧⌫ เพื่อแก้คำล่าสุด"
+        case .semiAuto: return "แก้คำที่พิมพ์ผิดภาษาเมื่อเคาะวรรคหรือ Enter แล้วสลับคีย์บอร์ดให้"
+        case .auto: return "แก้และสลับภาษาให้ทันทีระหว่างพิมพ์ ไม่ต้องรอวรรค ⇧⌫ ย้อนได้"
+        case .suggest: return "แสดงคำที่แก้แล้วข้างเคอร์เซอร์ กด Tab เพื่อใช้ ไม่แตะข้อความเอง"
+        case .code: return "แก้เฉพาะที่พิมพ์ผิดแป้นชัด ๆ ไม่แตะชื่อตัวแปรหรือคำสงวน ภาษาไทยเฉพาะในคอมเมนต์และสตริง"
+        }
+    }
 }
 
 /// The keyboard event tap: feeds every keystroke to the core and carries out
@@ -24,11 +47,15 @@ enum Mode: Int {
 final class Tap {
     static let shared = Tap()
 
-    var mode: Mode = .auto
+    /// The self-test sets the mode itself.
+    var testMode: Mode?
+    var mode: Mode { testMode ?? Prefs.shared.mode(for: frontmost) }
     /// Called with a short message to show after a fix.
     var onNote: ((String) -> Void)?
     /// Bundle IDs of apps RightType stays out of.
     var excluded: Set<String> = []
+    /// Keys go to RightType's own palette, not the app behind it.
+    var suspended = false
 
     private let engine = rt_engine_new()
     private var tap: CFMachPort?
@@ -78,6 +105,16 @@ final class Tap {
 
     func reset(all: Bool) {
         rt_reset(engine, all)
+        Hint.shared.hide()
+    }
+
+    func applyOptions(spelling: Bool, addresses: Bool) {
+        rt_set_options(engine, spelling, addresses)
+    }
+
+    func setSnippets(_ list: [Snippet]) {
+        rt_snippets_clear(engine)
+        for s in list { rt_snippet_add(engine, s.trigger, s.text, s.scope) }
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -94,17 +131,33 @@ final class Tap {
             reset(all: true)
             return pass
         }
-        if event.getIntegerValueField(.eventSourceUserData) == Inject.marker { return pass }
-        guard mode != .off, !excluded.contains(frontmost), let layout = InputSources.current else {
+        if event.getIntegerValueField(.eventSourceUserData) == Inject.marker || suspended { return pass }
+        if NSApp.isActive && testMode == nil {
+            // Typing in RightType's own windows (settings): left alone.
             reset(all: true)
             return pass
         }
-
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
         let shift = flags.contains(.maskShift)
         let command = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
         let repeating = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        Hint.shared.hide()
+
+        if code == Keys.space && flags.contains(.maskControl) && flags.contains(.maskAlternate)
+            && !flags.contains(.maskCommand) && !shift {
+            // Ctrl+Option+Space: the command palette, whatever the mode.
+            if !repeating && !IsSecureEventInputEnabled() {
+                reset(all: true)
+                DispatchQueue.main.async { Palette.shared.show() }
+            }
+            return nil
+        }
+        let mode = self.mode
+        guard mode != .off, !excluded.contains(frontmost), let layout = InputSources.current else {
+            reset(all: true)
+            return pass
+        }
 
         if code == Keys.delete {
             if flags.contains(.maskControl) && shift && !flags.contains(.maskCommand) && !flags.contains(.maskAlternate) {
@@ -123,7 +176,7 @@ final class Tap {
                 return pass
             }
             var action = RtAction()
-            guard rt_backspace(engine, mode.live, &action) else { return pass }
+            guard rt_backspace(engine, Int32(mode.rawValue), &action) else { return pass }
             // A run shown as Thai is re-rendered for the shorter keys.
             apply(&action)
             return nil
@@ -147,17 +200,28 @@ final class Tap {
                 return pass
             }
             var action = RtAction()
-            guard rt_key(engine, key, layout, mode.live, &action) else { return pass }
-            // Auto shows the run as Thai: the edit types the key's share of it.
+            guard rt_key(engine, key, layout, Int32(mode.rawValue), &action) else { return pass }
+            // Auto shows the run as Thai: the edit types the key's share of it;
+            // Suggest shows it by the caret and lets the key through.
+            let swallow = action.swallow
             apply(&action)
-            return nil
+            return swallow ? nil : pass
         }
         if shift && boundary != 0x20 {
             reset(all: true)
             return pass
         }
         var action = RtAction()
-        guard rt_boundary(engine, boundary, layout, mode.autofix, &action) else { return pass }
+        if boundary == 0x09, rt_tab(engine, &action) {
+            // Tab takes Suggest's hint.
+            apply(&action)
+            return nil
+        }
+        if mode == .code && rt_code_wants_line(engine, layout) {
+            // Whether this word is in a comment or a string decides it.
+            rt_code_line(engine, Hint.textBeforeCaret())
+        }
+        guard rt_boundary(engine, boundary, layout, Int32(mode.rawValue), &action) else { return pass }
         // The word is fixed and the boundary key re-sent after it; or a Thai
         // run stands and only the layout follows (the key goes through).
         let swallow = action.swallow
@@ -173,15 +237,25 @@ final class Tap {
 
     private func apply(_ action: inout RtAction, auto: Bool = false) {
         defer { rt_action_clear(&action) }
+        if let hint = action.hint {
+            let text = String(cString: hint)
+            if Prefs.shared.hints || testMode != nil {
+                // After the key reaches the app, so the caret is where it ends up.
+                DispatchQueue.main.async { Hint.shared.show("\(text)  ·  Tab") }
+            }
+        }
         Inject.backspaces(Int(action.backspaces))
         if let text = action.insert { Inject.type(String(cString: text)) }
         if action.boundary != 0 { Inject.boundary(action.boundary) }
+        if let steps = action.steps { Macro.run(String(cString: steps)) }
         InputSources.select(action.layout)
+        guard Prefs.shared.hints else { return }
         switch action.note {
         case RT_NOTE_FIXED: onNote?(auto ? "แก้ให้แล้ว · ⇧⌫ ย้อนกลับ" : "แก้แล้ว")
         case RT_NOTE_FIXED_MANY: onNote?("แก้ \(action.words) คำ")
         case RT_NOTE_REVERTED: onNote?("ย้อนกลับแล้ว")
         case RT_NOTE_NOTHING: onNote?("ไม่มีคำให้แก้")
+        case RT_NOTE_TYPO: onNote?("แก้คำสะกดผิดแล้ว · ⇧⌫ ย้อนกลับ")
         default: break
         }
     }

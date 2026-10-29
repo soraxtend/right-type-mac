@@ -14,8 +14,17 @@ enum Inject {
         for _ in 0..<n { key(Keys.delete) }
     }
 
-    /// Type `text` as Unicode, whatever the input source.
+    /// Type `text` as Unicode, whatever the input source. A line break is
+    /// pressed as Return (a snippet of several lines).
     static func type(_ text: String) {
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false)
+        for (i, line) in lines.enumerated() {
+            if i > 0 { key(Keys.returnKey) }
+            typeLine(String(line))
+        }
+    }
+
+    private static func typeLine(_ text: String) {
         let units = Array(text.utf16)
         // Some apps read at most 20 UTF-16 units from one event.
         var i = 0

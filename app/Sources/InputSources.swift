@@ -56,6 +56,21 @@ enum InputSources {
         enabled().contains { kind(of: $0) == RT_LAYOUT_THAI }
     }
 
+    /// The enabled keyboard layouts by name, as RightType reads them.
+    static var enabledSummary: (thai: [String], english: [String], other: [String]) {
+        var result: (thai: [String], english: [String], other: [String]) = ([], [], [])
+        for source in enabled() {
+            guard let p = TISGetInputSourceProperty(source, kTISPropertyLocalizedName) else { continue }
+            let name = Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+            switch kind(of: source) {
+            case RT_LAYOUT_THAI: result.thai.append(name)
+            case RT_LAYOUT_ENGLISH: result.english.append(name)
+            default: result.other.append(name)
+            }
+        }
+        return result
+    }
+
     private static func enabled() -> [TISInputSource] {
         let filter = [kTISPropertyInputSourceIsSelectCapable as String: true,
                       kTISPropertyInputSourceType as String: kTISTypeKeyboardLayout as String] as CFDictionary
