@@ -11,6 +11,8 @@ final class Palette {
     private let model = PaletteModel()
     private var monitor: Any?
 
+    var isOpen: Bool { panel?.isVisible == true }
+
     func show() {
         if panel?.isVisible == true { close(); return }
         model.load()
@@ -224,7 +226,6 @@ final class PaletteModel: ObservableObject {
                 })
             }
             var choices: [(String, String, Mode?)] = [
-                ("ใช้โหมดโค้ดใน \(appName) ตลอด", "chevron.left.forwardslash.chevron.right", .code),
                 ("ใช้โหมดกดแก้เองใน \(appName) ตลอด", "keyboard", .manual),
                 ("ใช้โหมดแนะนำใน \(appName) ตลอด", "lightbulb", .suggest),
                 ("ใช้โหมดอัตโนมัติใน \(appName) ตลอด", "bolt", .auto),

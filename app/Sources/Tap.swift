@@ -14,9 +14,6 @@ enum Mode: Int {
     case auto = 3
     /// Shows the fix by the caret; Tab takes it. Never changes text by itself.
     case suggest = 4
-    /// For code editors: names and keywords stay, Thai only in comments and
-    /// strings, Thai keys typed for code come back as English.
-    case code = 5
 
     var name: String {
         switch self {
@@ -25,7 +22,6 @@ enum Mode: Int {
         case .semiAuto: return "แก้เมื่อจบคำ"
         case .auto: return "อัตโนมัติ"
         case .suggest: return "แนะนำ"
-        case .code: return "โค้ด"
         }
     }
 
@@ -37,7 +33,6 @@ enum Mode: Int {
         case .semiAuto: return "แก้คำที่พิมพ์ผิดภาษาเมื่อเคาะวรรคหรือ Enter แล้วสลับคีย์บอร์ดให้"
         case .auto: return "แก้และสลับภาษาให้ทันทีระหว่างพิมพ์ ไม่ต้องรอวรรค ⇧⌫ ย้อนได้"
         case .suggest: return "แสดงคำที่แก้แล้วข้างเคอร์เซอร์ กด Tab เพื่อใช้ ไม่แตะข้อความเอง"
-        case .code: return "แก้เฉพาะที่พิมพ์ผิดแป้นชัด ๆ ไม่แตะชื่อตัวแปรหรือคำสงวน ภาษาไทยเฉพาะในคอมเมนต์และสตริง"
         }
     }
 }
@@ -49,7 +44,9 @@ final class Tap {
 
     /// The self-test sets the mode itself.
     var testMode: Mode?
-    var mode: Mode { testMode ?? Prefs.shared.mode(for: frontmost) }
+    /// The editor test decides each app's mode itself.
+    var testModes: ((String) -> Mode)?
+    var mode: Mode { testMode ?? testModes?(frontmost) ?? Prefs.shared.mode(for: frontmost) }
     /// Called with a short message to show after a fix.
     var onNote: ((String) -> Void)?
     /// Bundle IDs of apps RightType stays out of.
@@ -216,10 +213,6 @@ final class Tap {
             // Tab takes Suggest's hint.
             apply(&action)
             return nil
-        }
-        if mode == .code && rt_code_wants_line(engine, layout) {
-            // Whether this word is in a comment or a string decides it.
-            rt_code_line(engine, Hint.textBeforeCaret())
         }
         guard rt_boundary(engine, boundary, layout, Int32(mode.rawValue), &action) else { return pass }
         // The word is fixed and the boundary key re-sent after it; or a Thai

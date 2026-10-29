@@ -586,7 +586,7 @@ struct AppsPage: View {
     @State private var picked: Set<String> = []
 
     var body: some View {
-        Text("แต่ละแอปตั้งโหมดของตัวเองได้ แทนโหมดปกติ (\(prefs.mode.name)) โปรแกรมเขียนโค้ดใช้โหมดโค้ดเป็นค่าเริ่มต้น: ไม่แตะชื่อตัวแปรหรือคำสงวน และแก้เป็นภาษาไทยเฉพาะในคอมเมนต์และสตริง")
+        Text("แต่ละแอปตั้งโหมดของตัวเองได้ แทนโหมดปกติ (\(prefs.mode.name)) โปรแกรมเขียนโค้ดเริ่มที่โหมดกดแก้เอง ชื่อตัวแปรและคำสงวนจะไม่ถูกแก้ระหว่างพิมพ์ กด ⇧⌫ เมื่ออยากแก้คำที่พิมพ์ผิดภาษา")
             .foregroundStyle(.secondary)
         Card {
             let apps = prefs.appsWithModes.sorted { appName($0).localizedCompare(appName($1)) == .orderedAscending }
@@ -607,8 +607,8 @@ struct AppsPage: View {
                         // The labels of the Windows tray's "ในแอปนี้" submenu.
                         Text("ใช้โหมดปกติ").tag(-1)
                         Divider()
-                        ForEach([Mode.auto, .suggest, .manual, .semiAuto, .code, .off], id: \.self) { m in
-                            Text(m == .off ? "ปิดในแอปนี้" : m == .code ? "โค้ด (สำหรับเขียนโปรแกรม)" : "โหมด\(m.name)")
+                        ForEach([Mode.auto, .suggest, .manual, .semiAuto, .off], id: \.self) { m in
+                            Text(m == .off ? "ปิดในแอปนี้" : "โหมด\(m.name)")
                                 .tag(m.rawValue)
                         }
                     }
@@ -621,7 +621,7 @@ struct AppsPage: View {
             HStack {
                 Menu("เพิ่มจากแอปที่เปิดอยู่…") {
                     ForEach(runningApps(), id: \.0) { app in
-                        Button(app.1) { prefs.setAppMode(app.0, .code) }
+                        Button(app.1) { prefs.setAppMode(app.0, .manual) }
                     }
                 }
                 .fixedSize()
@@ -642,7 +642,7 @@ struct AppsPage: View {
             }
             .padding(.vertical, 10)
         }
-        Text("แอปที่เพิ่มใหม่เริ่มที่โหมดโค้ด เปลี่ยนได้จากเมนูท้ายแถว · RightType ยกเว้นช่องรหัสผ่านเสมอ (macOS ไม่ส่งปุ่มให้แอปไหนดักได้) · ตั้งโหมดของแอปที่ใช้อยู่ได้จากเมนู Aก หรือ ⌃⌥Space ด้วย")
+        Text("แอปที่เพิ่มใหม่เริ่มที่โหมดกดแก้เอง เปลี่ยนได้จากเมนูท้ายแถว · RightType ยกเว้นช่องรหัสผ่านเสมอ (macOS ไม่ส่งปุ่มให้แอปไหนดักได้) · ตั้งโหมดของแอปที่ใช้อยู่ได้จากเมนู Aก หรือ ⌃⌥Space ด้วย")
             .font(.caption).foregroundStyle(.secondary)
     }
 
@@ -661,7 +661,7 @@ struct AppsPage: View {
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         guard panel.runModal() == .OK, let url = panel.url, let id = Bundle(url: url)?.bundleIdentifier,
               !prefs.appsWithModes.contains(id) else { return }
-        prefs.setAppMode(id, .code)
+        prefs.setAppMode(id, .manual)
     }
 }
 

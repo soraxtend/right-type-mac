@@ -3,6 +3,7 @@
 #   ./build.sh            build into build/RightType.app
 #   ./build.sh install    also copy it to /Applications
 #   ./build.sh dist       also pack it as a disk image (.dmg) to share
+#   ./build.sh test       run the core's tests instead
 #
 # Signing: ad-hoc by default. With an Apple Developer ID, set
 #   DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"
@@ -16,7 +17,28 @@ export MACOSX_DEPLOYMENT_TARGET=13.0
 # Rust keeps source paths in the binary (for panic messages); without this they
 # would name the builder's home folder, and with it their user name.
 export RUSTFLAGS="--remap-path-prefix=$HOME=/build"
-cargo build --release --manifest-path core/Cargo.toml
+# rustup's standard library is built for macOS 11; Homebrew's `rust` formula
+# ships one built for the macOS it was bottled on (26), which older Macs
+# cannot run. Use rustup's when it is there (Homebrew's `rustup` is keg-only).
+RUSTUP=$(command -v rustup || true)
+[[ -z "$RUSTUP" && -x /opt/homebrew/opt/rustup/bin/rustup ]] && RUSTUP=/opt/homebrew/opt/rustup/bin/rustup
+core_cargo() {
+    if [[ -n "$RUSTUP" ]]; then
+        # The toolchain's own cargo and rustc, whatever else is on PATH.
+        local toolchain=$("$RUSTUP" run stable rustc --print sysroot)
+        PATH="$toolchain/bin:$PATH" RUSTC="$toolchain/bin/rustc" "$toolchain/bin/cargo" "$@" --manifest-path core/Cargo.toml
+    else
+        cargo "$@" --manifest-path core/Cargo.toml
+    fi
+}
+if [[ "${1:-}" == test ]]; then
+    # The debug profile: release strips the test binary, which rustup's
+    # minimal toolchain has no objcopy for.
+    shift
+    core_cargo test "$@"
+    exit
+fi
+core_cargo build --release
 
 APP=build/RightType.app
 rm -rf "$APP"
@@ -26,13 +48,23 @@ cp app/Info.plist "$APP/Contents/Info.plist"
 [[ -f app/AppIcon.icns ]] || swift tools/make_icon.swift
 cp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+LINK_LOG=$(mktemp)
 swiftc -O -swift-version 5 \
     -target "$(uname -m)-apple-macos13.0" \
     -import-objc-header core/include/righttype.h \
     -L core/target/release -lrighttype_mac_core \
     -framework AppKit -framework Carbon -framework ServiceManagement \
     app/Sources/*.swift \
-    -o "$APP/Contents/MacOS/RightType"
+    -o "$APP/Contents/MacOS/RightType" 2> >(tee "$LINK_LOG" >&2)
+# An object built for a newer macOS than the app's minimum would stop the app
+# from opening there: refuse it rather than ship it.
+if grep -q "was built for newer 'macOS' version" "$LINK_LOG"; then
+    rm -f "$LINK_LOG"
+    echo "error: part of the Rust core is built for a newer macOS than 13.0." >&2
+    echo "       Install rustup (brew install rustup) and build again." >&2
+    exit 1
+fi
+rm -f "$LINK_LOG"
 
 if [[ -n "${DEVELOPER_ID:-}" ]]; then
     # Hardened runtime and a secure timestamp: what notarization asks for.

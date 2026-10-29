@@ -21,8 +21,9 @@ let defaultExcluded: Set<String> = [
     "com.microsoft.rdc.macos", "com.apple.ScreenSharing", "com.realvnc.vncviewer",
 ]
 
-/// Code editors, where Code mode is the default (`code::CODE_EDITORS`); any
-/// of them can be given another mode.
+/// Code editors (`code::CODE_EDITORS` on Windows): Manual by default there,
+/// so names and keywords are never rewritten as they are typed. Any of them
+/// can be given another mode.
 let codeEditors: Set<String> = [
     "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92", // Cursor
     "com.exafunction.windsurf", "dev.zed.Zed", "com.apple.dt.Xcode", "com.sublimetext.4", "com.sublimetext.3",
@@ -106,20 +107,30 @@ final class Prefs: ObservableObject {
 
     /// The mode the tap works in now, in `app`.
     func mode(for app: String) -> Mode {
-        if !enabled || paused { return .off }
-        return appMode(app) ?? mode
+        Self.resolve(app, enabled: enabled, paused: paused, global: mode, excluded: excluded, appModes: appModes)
     }
 
     /// The mode `app` has of its own (nil: it follows the global mode).
     func appMode(_ app: String) -> Mode? {
+        Self.own(app, excluded: excluded, appModes: appModes)
+    }
+
+    /// `mode(for:)` from the settings alone (the self-test checks the rules).
+    static func resolve(_ app: String, enabled: Bool, paused: Bool, global: Mode,
+                        excluded: [String], appModes: [String: Int]) -> Mode {
+        if !enabled || paused { return .off }
+        return own(app, excluded: excluded, appModes: appModes) ?? global
+    }
+
+    static func own(_ app: String, excluded: [String], appModes: [String: Int]) -> Mode? {
         if excluded.contains(app) { return .off }
-        if let raw = appModes[app] { return raw < 0 ? nil : Mode(rawValue: raw) }
-        return codeEditors.contains(app) ? .code : nil
+        // 5 was Code mode in 0.2.0: Manual is what it is closest to.
+        if let raw = appModes[app] { return raw < 0 ? nil : Mode(rawValue: raw) ?? .manual }
+        return codeEditors.contains(app) ? .manual : nil
     }
 
     /// Give `app` a mode of its own (`.off` keeps out of it), or nil to
-    /// follow the global mode (Code mode, for a code editor, is set with
-    /// `.code` like any other).
+    /// follow the global mode (for a code editor too).
     func setAppMode(_ app: String, _ mode: Mode?) {
         excluded.removeAll { $0 == app }
         switch mode {
