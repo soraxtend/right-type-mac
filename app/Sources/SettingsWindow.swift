@@ -58,7 +58,7 @@ extension SettingsWindow {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, keyboard, tools, hotkeys, learned, snippets, apps, privacy, support
+    case general, keyboard, tools, hotkeys, learned, snippets, apps, privacy
     var id: String { rawValue }
 
     var title: String {
@@ -71,7 +71,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .snippets: return "คำย่อ"
         case .apps: return "แอปที่ไม่ใช้"
         case .privacy: return "ความเป็นส่วนตัว"
-        case .support: return "สนับสนุน"
         }
     }
 
@@ -85,7 +84,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .snippets: return "curlybraces"
         case .apps: return "macwindow"
         case .privacy: return "lock"
-        case .support: return "heart"
         }
     }
 }
@@ -149,7 +147,6 @@ struct SettingsView: View {
         case .snippets: SnippetsPage(prefs: prefs)
         case .apps: AppsPage(prefs: prefs)
         case .privacy: PrivacyPage()
-        case .support: SupportPage()
         }
     }
 }
@@ -719,28 +716,5 @@ struct PrivacyPage: View {
             Spacer()
         }
         .padding(.vertical, 10)
-    }
-}
-
-// MARK: Support
-
-struct SupportPage: View {
-    var body: some View {
-        Heading(title: "สนับสนุน RightType", icon: "heart")
-        Card {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("RightType เป็นซอฟต์แวร์ฟรีและโอเพนซอร์ส ถ้าช่วยให้คุณพิมพ์ได้สบายขึ้น ช่วยได้หลายทาง: กดดาวให้โปรเจกต์ แจ้งปัญหาหรือคำที่แก้ผิด หรือสนับสนุนผู้พัฒนาต้นฉบับผ่านช่องทางในหน้า GitHub")
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("เปิด GitHub") {
-                        NSWorkspace.shared.open(URL(string: "https://github.com/k-affan-th/RightType")!)
-                    }
-                    Button("แจ้งปัญหา") {
-                        NSWorkspace.shared.open(URL(string: "https://github.com/k-affan-th/RightType/issues")!)
-                    }
-                }
-            }
-            .padding(.vertical, 12)
-        }
     }
 }
