@@ -1681,8 +1681,8 @@ mod tests {
     fn snippets_work_in_every_mode_and_after_return() {
         for mode in [Mode::Manual, Mode::SemiAuto, Mode::Auto, Mode::Suggest] {
             let mut b = Box::new(Us, mode);
-            add(&mut b, ";sig", "Best,\nSarawoot", 2);
-            assert_eq!(b.keys("x ;sig\n"), "x Best,\nSarawoot\n");
+            add(&mut b, ";sig", "Best,\nThe team", 2);
+            assert_eq!(b.keys("x ;sig\n"), "x Best,\nThe team\n");
         }
     }
 
