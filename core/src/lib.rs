@@ -8,6 +8,8 @@
 //! still being typed (D-008), the `COMMIT_HORIZON` anchor (D-009),
 //! `policy::detect_token` / `revise_converted` at a word boundary, `Recent`
 //! for Shift+Backspace across several words, and the seed-phrase guard.
+//! The one departure is ๆ, which the core does not read as part of Thai
+//! (`Engine::closing_mai_yamok`, `Engine::inner_mai_yamok`).
 //!
 //! Modes, as the app names them: Manual (Shift+Backspace only), Semi-auto
 //! (judge a word when it ends), Auto (also fix Thai typed on the English
@@ -33,6 +35,7 @@ use righttype::policy::{self, InputLayout, Reading};
 use righttype::recent::Recent;
 use righttype::render;
 use righttype::secret::{self, SecretKind, SeedTracker};
+use righttype::segment;
 use righttype::snippets::{self, Scope, Snippet};
 use zeroize::Zeroize;
 
@@ -592,30 +595,54 @@ impl Engine {
     /// reads `แก้ๆ` as no word at all; the word is judged without it and given
     /// it back.
     ///
-    /// `None` when the keys count as they are: a word, perhaps one the typist
-    /// taught by flipping it back, or what `policy::live_reading` takes for a
-    /// key or an address. (Not any password's shape: long Thai words often
-    /// have one.)
+    /// `None` when the keys count as they are ([`Self::keys_stand`]).
     fn closing_mai_yamok<'a>(&self, keys: &'a str) -> Option<(&'a str, usize)> {
         let stem = keys.trim_end_matches(MAI_YAMOK_KEY);
-        if stem.is_empty() || stem.len() == keys.len() {
-            return None;
-        }
-        let key_shaped = matches!(
-            secret::classify_token(keys),
-            Some(SecretKind::Hex | SecretKind::Base58Wif | SecretKind::Bech32 | SecretKind::ExtendedKey)
-        );
-        if key_shaped || english::is_word(keys, self.en) {
+        if stem.is_empty() || stem.len() == keys.len() || self.keys_stand(keys) {
             return None;
         }
         Some((stem, keys.len() - stem.len()))
     }
 
-    /// `policy::live_reading`, minding a closing ๆ.
+    /// Keys split after the last ๆ with more typed behind it (`cdhqg]p`,
+    /// แก้ๆเลย): up to and including the ๆ, and the rest. Thai often carries
+    /// on with no space, and the core reads that as no word either.
+    fn inner_mai_yamok<'a>(&self, keys: &'a str) -> Option<(&'a str, &'a str)> {
+        let (head, tail) = keys.split_at(keys.rfind(MAI_YAMOK_KEY)? + MAI_YAMOK_KEY.len_utf8());
+        if tail.is_empty() || head.trim_end_matches(MAI_YAMOK_KEY).is_empty() || self.keys_stand(keys) {
+            return None;
+        }
+        Some((head, tail))
+    }
+
+    /// The keys count as they are, whatever ๆ they hold: a word, perhaps one
+    /// the typist taught by flipping it back, or what `policy::live_reading`
+    /// takes for a key or an address. (Not any password's shape: long Thai
+    /// words often have one.)
+    fn keys_stand(&self, keys: &str) -> bool {
+        let key_shaped = matches!(
+            secret::classify_token(keys),
+            Some(SecretKind::Hex | SecretKind::Base58Wif | SecretKind::Bech32 | SecretKind::ExtendedKey)
+        );
+        key_shaped || english::is_word(keys, self.en)
+    }
+
+    /// `policy::live_reading`, minding ๆ. What follows an inner ๆ only keeps a
+    /// reading already on screen, so a run withdrawn once stays withdrawn.
     fn live_reading(&self, run: &str, holding: bool) -> Reading {
         if let Some((stem, n)) = self.closing_mai_yamok(run) {
-            if let Reading::Thai(thai) = policy::live_reading(stem, holding, self.en, self.th) {
+            if let Reading::Thai(thai) = self.live_reading(stem, holding) {
                 return Reading::Thai(with_mai_yamok(thai, n));
+            }
+        }
+        if let Some((head, tail)) = self.inner_mai_yamok(run).filter(|_| holding) {
+            if let Reading::Thai(mut thai) = self.live_reading(head, true) {
+                let mut rest = after_mai_yamok(tail);
+                if rest == tail || segment::is_viable_prefix(&rest, self.th) {
+                    return Reading::Thai(joined(thai, rest));
+                }
+                rest.zeroize();
+                thai.zeroize();
             }
         }
         policy::live_reading(run, holding, self.en, self.th)
@@ -634,19 +661,41 @@ impl Engine {
         policy::run_goes_back(keys, reading, self.en, self.th)
     }
 
-    /// `policy::detect_token`, minding a closing ๆ: a word the core turns
-    /// into Thai without it keeps it.
+    /// `policy::detect_token`, minding ๆ: a word the core turns into Thai
+    /// without it keeps it, and Thai words may follow.
     fn detect_token(&self, word: &str, layout: InputLayout) -> Option<Detection> {
         policy::detect_token(word, layout, self.en, self.th).or_else(|| {
-            let (stem, n) = self.closing_mai_yamok(word).filter(|_| layout == InputLayout::UsQwerty)?;
-            let mut d = policy::detect_token(stem, layout, self.en, self.th)?;
-            if layout_code(&d.corrected) != RT_LAYOUT_THAI {
-                d.corrected.zeroize();
+            if layout != InputLayout::UsQwerty {
                 return None;
             }
-            d.corrected = with_mai_yamok(std::mem::take(&mut d.corrected), n);
+            if let Some((stem, n)) = self.closing_mai_yamok(word) {
+                let mut d = self.thai_detection(stem)?;
+                d.corrected = with_mai_yamok(std::mem::take(&mut d.corrected), n);
+                return Some(d);
+            }
+            let (head, tail) = self.inner_mai_yamok(word)?;
+            let mut rest = after_mai_yamok(tail);
+            if rest != tail && !segment::is_fully_known(&rest, self.th) {
+                rest.zeroize();
+                return None;
+            }
+            let Some(mut d) = self.thai_detection(head) else {
+                rest.zeroize();
+                return None;
+            };
+            d.corrected = joined(std::mem::take(&mut d.corrected), rest);
             Some(d)
         })
+    }
+
+    /// [`Self::detect_token`] on the English layout, when it comes out Thai.
+    fn thai_detection(&self, keys: &str) -> Option<Detection> {
+        let mut d = self.detect_token(keys, InputLayout::UsQwerty)?;
+        if layout_code(&d.corrected) != RT_LAYOUT_THAI {
+            d.corrected.zeroize();
+            return None;
+        }
+        Some(d)
     }
 
     /// Keep a finished word for Shift+Backspace. Not one ended by Tab: Tab
@@ -840,14 +889,30 @@ fn layout_code(text: &str) -> i32 {
 const MAI_YAMOK: char = 'ๆ';
 const MAI_YAMOK_KEY: char = 'q';
 
-/// `thai` closed with `n` of them. A new string, so growing it leaves no copy
-/// of what was typed behind.
-fn with_mai_yamok(mut thai: String, n: usize) -> String {
-    let mut closed = String::with_capacity(thai.len() + n * MAI_YAMOK.len_utf8());
-    closed.push_str(&thai);
-    closed.extend(std::iter::repeat(MAI_YAMOK).take(n));
-    thai.zeroize();
-    closed
+/// The reading of what follows an inner ๆ. `!` `?` `)` are meant as typed, as
+/// the core takes them after a Thai word.
+fn after_mai_yamok(tail: &str) -> String {
+    if tail.chars().all(|c| matches!(c, '!' | '?' | ')')) {
+        tail.to_string()
+    } else {
+        en_to_th(tail)
+    }
+}
+
+/// `thai` closed with `n` of them.
+fn with_mai_yamok(thai: String, n: usize) -> String {
+    joined(thai, std::iter::repeat(MAI_YAMOK).take(n).collect())
+}
+
+/// Two pieces of a reading, both wiped: a new string, so growing one leaves no
+/// copy of what was typed behind.
+fn joined(mut head: String, mut tail: String) -> String {
+    let mut whole = String::with_capacity(head.len() + tail.len());
+    whole.push_str(&head);
+    whole.push_str(&tail);
+    head.zeroize();
+    tail.zeroize();
+    whole
 }
 
 fn is_thai(c: char) -> bool {
@@ -1438,6 +1503,60 @@ mod tests {
     }
 
     #[test]
+    fn thai_carries_on_after_mai_yamok() {
+        for mut b in [semi(Us), auto(Us)] {
+            assert_eq!(b.keys("cdhqg]p "), "แก้ๆเลย ");
+            assert_eq!(b.layout, Thai);
+        }
+        for (keys, thai) in [
+            ("gfHdqg]jo ", "เด็กๆเล่น "),
+            ("0ib'qc]h; ", "จริงๆแล้ว "),
+            ("giH;qouh ", "เร็วๆนี้ "),
+            ("wxq,kq ", "ไปๆมาๆ "),
+            ("cdhqg]pq ", "แก้ๆเลยๆ "),
+        ] {
+            assert_eq!(semi(Us).keys(keys), thai);
+            assert_eq!(auto(Us).keys(keys), thai);
+        }
+        // Marks meant as typed.
+        for (keys, thai) in [("cdhq! ", "แก้ๆ! "), ("cdhq? ", "แก้ๆ? "), ("cdhq) ", "แก้ๆ) ")] {
+            assert_eq!(semi(Us).keys(keys), thai);
+            assert_eq!(auto(Us).keys(keys), thai);
+        }
+        // Backspace back to before the ๆ, and on from there.
+        assert_eq!(auto(Us).keys("cdhqg<<g]p "), "แก้เลย ");
+        // What follows is no Thai: the keys come back, all of them.
+        for mut b in [semi(Us), auto(Us)] {
+            assert_eq!(b.keys("cdhqhello "), "cdhqhello ");
+        }
+        // English words with a q inside stay English.
+        for word in ["equal", "require", "request", "sequence", "quick", "mysql", "sqlite", "jquery", "qwerty", "graphql", "pyqt"] {
+            assert_eq!(semi(Us).keys(&format!("{word} ")), format!("{word} "));
+            assert_eq!(auto(Us).keys(&format!("{word} ")), format!("{word} "));
+        }
+    }
+
+    #[test]
+    fn thai_words_either_side_of_mai_yamok_come_back() {
+        let words: Vec<&str> = dict::thai_words().filter(|w| !w.contains(MAI_YAMOK) && w.chars().count() <= 8).step_by(40).collect();
+        let keys = |word: &str| -> String { word.chars().map(|c| sim::key_for(c).map_or(c, |(k, _)| k)).collect() };
+        // `^` and `<` are commands to this test's box.
+        let typable = |k: &str| k.is_ascii() && !k.contains([MAI_YAMOK_KEY, '^', '<']);
+        for (i, first) in words.iter().enumerate() {
+            let second = words[(i * 7 + 13) % words.len()];
+            let (k1, k2) = (keys(first), keys(second));
+            if !typable(&k1) || !typable(&k2) {
+                continue;
+            }
+            for mode in [Mode::SemiAuto, Mode::Auto] {
+                if Box::new(Us, mode).keys(&format!("{k1} ")) == format!("{first} ") {
+                    assert_eq!(Box::new(Us, mode).keys(&format!("{k1}q{k2} ")), format!("{first}ๆ{second} "), "{mode:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn mai_yamok_closes_whatever_thai_word_comes_back_without_it() {
         for word in dict::thai_words().filter(|w| !w.contains(MAI_YAMOK)).step_by(25) {
             let keys: String = word.chars().map(|c| sim::key_for(c).map_or(c, |(k, _)| k)).collect();
@@ -1455,10 +1574,12 @@ mod tests {
     #[test]
     fn mai_yamok_leaves_the_full_keys_their_say() {
         // Keys taught as a word stay, though นิด would read without the q.
-        let taught: &'static Dictionary = std::boxed::Box::leak(std::boxed::Box::new(Dictionary::from_words(["obfq"])));
-        for mut b in [semi(Us), auto(Us)] {
-            b.e.en = taught;
-            assert_eq!(b.keys("obfq "), "obfq ");
+        for word in ["obfq", "obfqobf"] {
+            let taught: &'static Dictionary = std::boxed::Box::leak(std::boxed::Box::new(Dictionary::from_words([word])));
+            for mut b in [semi(Us), auto(Us)] {
+                b.e.en = taught;
+                assert_eq!(b.keys(&format!("{word} ")), format!("{word} "));
+            }
         }
         // A password's shape: Auto does what the hook does, Semi-auto leaves it.
         let password = "0vfuzfd'jr8q ";
