@@ -25,6 +25,7 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use righttype::buffer::{Key, WordBuffer};
+use righttype::detect::Detection;
 use righttype::dict::{self, Dictionary};
 use righttype::layout::{auto_convert, en_to_th};
 use righttype::policy::{self, InputLayout, Reading};
@@ -318,7 +319,7 @@ impl Engine {
         // What the app shows for this word.
         let mut screen = word.clone();
         if let Some(owned) = self.owned.take() {
-            if !policy::run_goes_back(&word, &owned.rendered, self.en, self.th) {
+            if !self.run_goes_back(&word, &owned.rendered) {
                 // The Thai reading stands; the boundary goes through as typed.
                 self.remember(&owned.rendered, boundary, true);
                 word.zeroize();
@@ -345,7 +346,7 @@ impl Engine {
         let mut detection = match (judge, mark) {
             (false, _) | (_, Mark::Decided) => None,
             (true, Mark::Converted) => policy::revise_converted(&word, self.en, self.th),
-            (true, Mark::Plain) => policy::detect_token(&word, layout, self.en, self.th),
+            (true, Mark::Plain) => self.detect_token(&word, layout),
         };
         let corrected = detection.as_ref().map(|d| d.corrected.as_str());
         let seed_run = self.seed.observe_candidate(&word, corrected);
@@ -447,7 +448,7 @@ impl Engine {
         {
             return None;
         }
-        match policy::live_reading(run, false, self.en, self.th) {
+        match self.live_reading(run, false) {
             Reading::Thai(mut thai) => {
                 self.live_hint = Some(Instant::now());
                 let hint = owned_string(&thai);
@@ -532,7 +533,7 @@ impl Engine {
         if !holding && run.is_empty() {
             return None;
         }
-        let mut reading = policy::live_reading(&run, holding, self.en, self.th);
+        let mut reading = self.live_reading(&run, holding);
         if matches!(reading, Reading::Thai(_)) && self.seed.guarding() {
             reading = Reading::AsTyped;
         }
@@ -582,6 +583,43 @@ impl Engine {
         assumed.zeroize();
         target.zeroize();
         Some(action)
+    }
+
+    /// `policy::live_reading`, minding a closing ๆ ([`without_mai_yamok`]).
+    fn live_reading(&self, run: &str, holding: bool) -> Reading {
+        if let Some((stem, n)) = without_mai_yamok(run) {
+            if let Reading::Thai(mut thai) = policy::live_reading(stem, holding, self.en, self.th) {
+                thai.extend(std::iter::repeat(MAI_YAMOK).take(n));
+                return Reading::Thai(thai);
+            }
+        }
+        policy::live_reading(run, holding, self.en, self.th)
+    }
+
+    /// `policy::run_goes_back`, minding a closing ๆ.
+    fn run_goes_back(&self, keys: &str, reading: &str) -> bool {
+        if let Some((stem, n)) = without_mai_yamok(keys) {
+            let reading_stem = reading.trim_end_matches(MAI_YAMOK);
+            if reading.chars().count() - reading_stem.chars().count() == n {
+                return policy::run_goes_back(stem, reading_stem, self.en, self.th);
+            }
+        }
+        policy::run_goes_back(keys, reading, self.en, self.th)
+    }
+
+    /// `policy::detect_token`, minding a closing ๆ: a word the core turns
+    /// into Thai without it keeps it.
+    fn detect_token(&self, word: &str, layout: InputLayout) -> Option<Detection> {
+        policy::detect_token(word, layout, self.en, self.th).or_else(|| {
+            let (stem, n) = without_mai_yamok(word).filter(|_| layout == InputLayout::UsQwerty)?;
+            let mut d = policy::detect_token(stem, layout, self.en, self.th)?;
+            if layout_code(&d.corrected) != RT_LAYOUT_THAI {
+                d.corrected.zeroize();
+                return None;
+            }
+            d.corrected.extend(std::iter::repeat(MAI_YAMOK).take(n));
+            Some(d)
+        })
     }
 
     /// Keep a finished word for Shift+Backspace. Not one ended by Tab: Tab
@@ -769,6 +807,20 @@ fn layout_code(text: &str) -> i32 {
     } else {
         RT_LAYOUT_ENGLISH
     }
+}
+
+/// Mai yamok, and the key that types it on Kedmanee.
+const MAI_YAMOK: char = 'ๆ';
+const MAI_YAMOK_KEY: char = 'q';
+
+/// Keys typed on the English layout, split before a closing ๆ (`cdhq`, แก้ๆ):
+/// the word before it and how many there are. ๆ repeats a word rather than
+/// spelling one, so the core, which looks for whole Thai words, reads `แก้ๆ`
+/// as no word at all; the word is judged without it and given it back.
+fn without_mai_yamok(keys: &str) -> Option<(&str, usize)> {
+    let stem = keys.trim_end_matches(MAI_YAMOK_KEY);
+    let n = keys.len() - stem.len();
+    (n > 0 && !stem.is_empty()).then_some((stem, n))
 }
 
 fn is_thai(c: char) -> bool {
@@ -1336,6 +1388,29 @@ mod tests {
     }
 
     #[test]
+    fn mai_yamok_stays_with_its_word() {
+        // แก้ๆ, ดีๆ, สวัสดีๆ: ๆ (the q key) closes the word rather than undoing it.
+        for mut b in [semi(Us), auto(Us)] {
+            assert_eq!(b.keys("cdhq "), "แก้ๆ ");
+            assert_eq!(b.layout, Thai);
+        }
+        assert_eq!(auto(Us).keys("cdhqq "), "แก้ๆๆ ");
+        assert_eq!(auto(Us).keys("l;ylfuq "), "สวัสดีๆ ");
+        assert_eq!(semi(Us).keys("l;ylfuq "), "สวัสดีๆ ");
+        let mut b = suggest(Us);
+        b.keys("cdhq");
+        assert_eq!(b.hint, "แก้ๆ");
+        // Typed on the Thai layout it was always left alone.
+        for mut b in [semi(Thai), auto(Thai)] {
+            assert_eq!(b.keys("cdhq l;ylfuq "), "แก้ๆ สวัสดีๆ ");
+        }
+        // English words that end in q stay English.
+        for mut b in [semi(Us), auto(Us)] {
+            assert_eq!(b.keys("iraq faq q "), "iraq faq q ");
+        }
+    }
+
+    #[test]
     fn semi_auto_fixes_english_typed_on_thai() {
         assert_eq!(semi(Thai).keys("hello world "), "hello world ");
     }
@@ -1581,7 +1656,9 @@ mod tests {
 
     #[test]
     fn auto_matches_the_windows_hook_on_random_typing() {
-        const ALPHABET: &[u8] = b"l;yfu8i[mjohkdrtgpbnvsaecwq,.'<< ";
+        // No `q`: ๆ closing a word is where this side departs from the hook
+        // (`mai_yamok_stays_with_its_word`).
+        const ALPHABET: &[u8] = b"l;yfu8i[mjohkdrtgpbnvsaecw,.'<< ";
         let mut state: u64 = 0x5eed_1234_abcd_ef01;
         let mut next = || {
             state ^= state << 13;
