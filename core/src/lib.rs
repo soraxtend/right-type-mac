@@ -8,6 +8,8 @@
 //! still being typed (D-008), the `COMMIT_HORIZON` anchor (D-009),
 //! `policy::detect_token` / `revise_converted` at a word boundary, `Recent`
 //! for Shift+Backspace across several words, and the seed-phrase guard.
+//! The one departure is ๆ, which the core does not read as part of Thai
+//! (`Engine::closing_mai_yamok`, `Engine::inner_mai_yamok`).
 //!
 //! Modes, as the app names them: Manual (Shift+Backspace only), Semi-auto
 //! (judge a word when it ends), Auto (also fix Thai typed on the English
