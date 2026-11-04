@@ -27,11 +27,12 @@ use std::time::{Duration, Instant};
 use righttype::buffer::{Key, WordBuffer};
 use righttype::detect::Detection;
 use righttype::dict::{self, Dictionary};
+use righttype::english;
 use righttype::layout::{auto_convert, en_to_th};
 use righttype::policy::{self, InputLayout, Reading};
 use righttype::recent::Recent;
 use righttype::render;
-use righttype::secret::SeedTracker;
+use righttype::secret::{self, SecretKind, SeedTracker};
 use righttype::snippets::{self, Scope, Snippet};
 use zeroize::Zeroize;
 
@@ -585,9 +586,24 @@ impl Engine {
         Some(action)
     }
 
-    /// `policy::live_reading`, minding a closing ๆ ([`without_mai_yamok`]).
+    /// [`without_mai_yamok`], unless the keys count as they are: a word,
+    /// perhaps one the typist taught by flipping it back, or what
+    /// `policy::live_reading` takes for a key or an address. (Not any
+    /// password's shape: long Thai words often have one.)
+    fn closing_mai_yamok<'a>(&self, keys: &'a str) -> Option<(&'a str, usize)> {
+        let key_shaped = matches!(
+            secret::classify_token(keys),
+            Some(SecretKind::Hex | SecretKind::Base58Wif | SecretKind::Bech32 | SecretKind::ExtendedKey)
+        );
+        if key_shaped || english::is_word(keys, self.en) {
+            return None;
+        }
+        without_mai_yamok(keys)
+    }
+
+    /// `policy::live_reading`, minding a closing ๆ.
     fn live_reading(&self, run: &str, holding: bool) -> Reading {
-        if let Some((stem, n)) = without_mai_yamok(run) {
+        if let Some((stem, n)) = self.closing_mai_yamok(run) {
             if let Reading::Thai(mut thai) = policy::live_reading(stem, holding, self.en, self.th) {
                 thai.extend(std::iter::repeat(MAI_YAMOK).take(n));
                 return Reading::Thai(thai);
@@ -598,10 +614,12 @@ impl Engine {
 
     /// `policy::run_goes_back`, minding a closing ๆ.
     fn run_goes_back(&self, keys: &str, reading: &str) -> bool {
-        if let Some((stem, n)) = without_mai_yamok(keys) {
+        if let Some((stem, n)) = self.closing_mai_yamok(keys) {
             let reading_stem = reading.trim_end_matches(MAI_YAMOK);
-            if reading.chars().count() - reading_stem.chars().count() == n {
-                return policy::run_goes_back(stem, reading_stem, self.en, self.th);
+            if reading.chars().count() - reading_stem.chars().count() == n
+                && policy::run_goes_back(stem, reading_stem, self.en, self.th)
+            {
+                return true;
             }
         }
         policy::run_goes_back(keys, reading, self.en, self.th)
@@ -611,7 +629,7 @@ impl Engine {
     /// into Thai without it keeps it.
     fn detect_token(&self, word: &str, layout: InputLayout) -> Option<Detection> {
         policy::detect_token(word, layout, self.en, self.th).or_else(|| {
-            let (stem, n) = without_mai_yamok(word).filter(|_| layout == InputLayout::UsQwerty)?;
+            let (stem, n) = self.closing_mai_yamok(word).filter(|_| layout == InputLayout::UsQwerty)?;
             let mut d = policy::detect_token(stem, layout, self.en, self.th)?;
             if layout_code(&d.corrected) != RT_LAYOUT_THAI {
                 d.corrected.zeroize();
@@ -1389,7 +1407,7 @@ mod tests {
 
     #[test]
     fn mai_yamok_stays_with_its_word() {
-        // แก้ๆ, ดีๆ, สวัสดีๆ: ๆ (the q key) closes the word rather than undoing it.
+        // แก้ๆ, สวัสดีๆ: ๆ (the q key) closes the word rather than undoing it.
         for mut b in [semi(Us), auto(Us)] {
             assert_eq!(b.keys("cdhq "), "แก้ๆ ");
             assert_eq!(b.layout, Thai);
@@ -1408,6 +1426,35 @@ mod tests {
         for mut b in [semi(Us), auto(Us)] {
             assert_eq!(b.keys("iraq faq q "), "iraq faq q ");
         }
+    }
+
+    #[test]
+    fn mai_yamok_closes_whatever_thai_word_comes_back_without_it() {
+        for word in dict::thai_words().filter(|w| !w.contains(MAI_YAMOK)).step_by(25) {
+            let keys: String = word.chars().map(|c| sim::key_for(c).map_or(c, |(k, _)| k)).collect();
+            if !keys.is_ascii() || keys.contains(MAI_YAMOK_KEY) {
+                continue;
+            }
+            for mode in [Mode::SemiAuto, Mode::Auto] {
+                if Box::new(Us, mode).keys(&format!("{keys} ")) == format!("{word} ") {
+                    assert_eq!(Box::new(Us, mode).keys(&format!("{keys}q ")), format!("{word}ๆ "), "{mode:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mai_yamok_leaves_the_full_keys_their_say() {
+        // Keys taught as a word stay, though นิด would read without the q.
+        let taught: &'static Dictionary = std::boxed::Box::leak(std::boxed::Box::new(Dictionary::from_words(["obfq"])));
+        for mut b in [semi(Us), auto(Us)] {
+            b.e.en = taught;
+            assert_eq!(b.keys("obfq "), "obfq ");
+        }
+        // A password's shape: Auto does what the hook does, Semi-auto leaves it.
+        let password = "0vfuzfd'jr8q ";
+        compare(&password.chars().map(Some).collect::<Vec<_>>(), Us, password);
+        assert_eq!(semi(Us).keys(password), password);
     }
 
     #[test]
@@ -1632,6 +1679,11 @@ mod tests {
                     mac.key(*c);
                 }
             }
+            // ๆ closing a word is where this side departs from the hook
+            // (`mai_yamok_stays_with_its_word`).
+            if mac.screen != sim.screen && mac.screen.contains(MAI_YAMOK) {
+                return;
+            }
             assert_eq!(mac.screen, sim.screen, "{label}: after key {i}");
             assert_eq!(mac.layout, sim.layout(), "{label}: layout after key {i}");
         }
@@ -1656,9 +1708,7 @@ mod tests {
 
     #[test]
     fn auto_matches_the_windows_hook_on_random_typing() {
-        // No `q`: ๆ closing a word is where this side departs from the hook
-        // (`mai_yamok_stays_with_its_word`).
-        const ALPHABET: &[u8] = b"l;yfu8i[mjohkdrtgpbnvsaecw,.'<< ";
+        const ALPHABET: &[u8] = b"l;yfu8i[mjohkdrtgpbnvsaecwq,.'<< ";
         let mut state: u64 = 0x5eed_1234_abcd_ef01;
         let mut next = || {
             state ^= state << 13;
