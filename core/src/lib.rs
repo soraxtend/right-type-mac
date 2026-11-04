@@ -586,11 +586,21 @@ impl Engine {
         Some(action)
     }
 
-    /// [`without_mai_yamok`], unless the keys count as they are: a word,
-    /// perhaps one the typist taught by flipping it back, or what
-    /// `policy::live_reading` takes for a key or an address. (Not any
-    /// password's shape: long Thai words often have one.)
+    /// Keys typed on the English layout, split before a closing ๆ (`cdhq`,
+    /// แก้ๆ): the word before it and how many there are. ๆ repeats a word
+    /// rather than spelling one, so the core, which looks for whole Thai words,
+    /// reads `แก้ๆ` as no word at all; the word is judged without it and given
+    /// it back.
+    ///
+    /// `None` when the keys count as they are: a word, perhaps one the typist
+    /// taught by flipping it back, or what `policy::live_reading` takes for a
+    /// key or an address. (Not any password's shape: long Thai words often
+    /// have one.)
     fn closing_mai_yamok<'a>(&self, keys: &'a str) -> Option<(&'a str, usize)> {
+        let stem = keys.trim_end_matches(MAI_YAMOK_KEY);
+        if stem.is_empty() || stem.len() == keys.len() {
+            return None;
+        }
         let key_shaped = matches!(
             secret::classify_token(keys),
             Some(SecretKind::Hex | SecretKind::Base58Wif | SecretKind::Bech32 | SecretKind::ExtendedKey)
@@ -598,15 +608,14 @@ impl Engine {
         if key_shaped || english::is_word(keys, self.en) {
             return None;
         }
-        without_mai_yamok(keys)
+        Some((stem, keys.len() - stem.len()))
     }
 
     /// `policy::live_reading`, minding a closing ๆ.
     fn live_reading(&self, run: &str, holding: bool) -> Reading {
         if let Some((stem, n)) = self.closing_mai_yamok(run) {
-            if let Reading::Thai(mut thai) = policy::live_reading(stem, holding, self.en, self.th) {
-                thai.extend(std::iter::repeat(MAI_YAMOK).take(n));
-                return Reading::Thai(thai);
+            if let Reading::Thai(thai) = policy::live_reading(stem, holding, self.en, self.th) {
+                return Reading::Thai(with_mai_yamok(thai, n));
             }
         }
         policy::live_reading(run, holding, self.en, self.th)
@@ -635,7 +644,7 @@ impl Engine {
                 d.corrected.zeroize();
                 return None;
             }
-            d.corrected.extend(std::iter::repeat(MAI_YAMOK).take(n));
+            d.corrected = with_mai_yamok(std::mem::take(&mut d.corrected), n);
             Some(d)
         })
     }
@@ -831,14 +840,14 @@ fn layout_code(text: &str) -> i32 {
 const MAI_YAMOK: char = 'ๆ';
 const MAI_YAMOK_KEY: char = 'q';
 
-/// Keys typed on the English layout, split before a closing ๆ (`cdhq`, แก้ๆ):
-/// the word before it and how many there are. ๆ repeats a word rather than
-/// spelling one, so the core, which looks for whole Thai words, reads `แก้ๆ`
-/// as no word at all; the word is judged without it and given it back.
-fn without_mai_yamok(keys: &str) -> Option<(&str, usize)> {
-    let stem = keys.trim_end_matches(MAI_YAMOK_KEY);
-    let n = keys.len() - stem.len();
-    (n > 0 && !stem.is_empty()).then_some((stem, n))
+/// `thai` closed with `n` of them. A new string, so growing it leaves no copy
+/// of what was typed behind.
+fn with_mai_yamok(mut thai: String, n: usize) -> String {
+    let mut closed = String::with_capacity(thai.len() + n * MAI_YAMOK.len_utf8());
+    closed.push_str(&thai);
+    closed.extend(std::iter::repeat(MAI_YAMOK).take(n));
+    thai.zeroize();
+    closed
 }
 
 fn is_thai(c: char) -> bool {
@@ -1679,9 +1688,9 @@ mod tests {
                     mac.key(*c);
                 }
             }
-            // ๆ closing a word is where this side departs from the hook
-            // (`mai_yamok_stays_with_its_word`).
-            if mac.screen != sim.screen && mac.screen.contains(MAI_YAMOK) {
+            // The q key closing a word with ๆ is where this side departs from
+            // the hook (`mai_yamok_stays_with_its_word`).
+            if *k == Some(MAI_YAMOK_KEY) && mac.screen != sim.screen && mac.screen.ends_with(MAI_YAMOK) {
                 return;
             }
             assert_eq!(mac.screen, sim.screen, "{label}: after key {i}");
